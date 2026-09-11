@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel
 
+from core.config import get_settings
 from core.database import get_supabase_client
 from core.prompts import (
     CALENDAR_SYSTEM_PROMPT,
@@ -85,7 +86,13 @@ def _extract_user_id(authorization: str) -> str:
     """Extract and validate user ID from the Supabase JWT.
 
     The frontend sends the access token; we verify it via Supabase admin client.
+    In LOCAL_AUTH mode, we skip validation and return a fixed local user ID.
     """
+    # ── Local Auth Bypass ────────────────────────────────────────────────
+    settings = get_settings()
+    if getattr(settings, "local_auth", False):
+        return getattr(settings, "local_user_id", "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671")
+
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header.")
 
@@ -338,7 +345,7 @@ async def send_message(
     db = get_supabase_client()
     llm = get_hybrid_client()
 
-    # ── Parallel execution of initial I/O ───────────────────────────────────
+    # ── Database fetch ───────────────────────────────────────────────────────
     def _fetch_db_data():
         s = db.table("chat_sessions").select("*").eq("id", body.session_id).single().execute()
         if not s.data or s.data["user_id"] != user_id:
@@ -346,21 +353,14 @@ async def send_message(
         p = db.table("profiles").select("full_name, academic_role, department, year, interests, synthesized_memory").eq("id", user_id).single().execute()
         h = db.table("messages").select("role, content").eq("session_id", body.session_id).order("created_at", desc=True).limit(20).execute()
         # Reverse to restore chronological order
-        if h.data:
+        if isinstance(h.data, list):
             h.data = h.data[::-1]
         return s, p, h
 
-    intent_prompt = INTENT_CLASSIFICATION_PROMPT.format(user_message=body.message)
-    intent_task = asyncio.create_task(llm.generate_json(intent_prompt, fast_model=True))
-    db_task = asyncio.to_thread(_fetch_db_data)
-
     try:
-        db_results, intent_result = await asyncio.gather(db_task, intent_task)
-        session, profile, history = db_results
+        session, profile, history = await asyncio.to_thread(_fetch_db_data)
     except Exception as e:
-        logger.error("Error during parallel API fetches", exc_info=True)
-        if "429" in str(e) or "quota" in str(e).lower():
-            raise HTTPException(status_code=429, detail="LLM Rate limit exceeded. Please try again later.")
+        logger.error("Error during DB fetch", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
     # ── Verify session ownership ────────────────────────────────────────────
@@ -387,19 +387,53 @@ async def send_message(
     if memory_parts:
         memory_context = "USER CONTEXT (Personalization Data):\n" + "\n".join(memory_parts)
 
+    history_list = history.data if isinstance(history.data, list) else []
+
     conversation_context = "\n".join(
-        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
-        for m in history.data
+        f"{'User' if m.get('role') == 'user' else 'Assistant'}: {m.get('content', '')}"
+        for m in history_list if isinstance(m, dict)
     )
 
-    # ── Intent Classification ───────────────────────────────────────────────
+    # ── Context-aware Intent Classification ──────────────────────────────────
+    recent_history_snippet = "\n".join(
+        f"{'User' if m.get('role') == 'user' else 'Assistant'}: {m.get('content', '')}"
+        for m in history_list[-4:] if isinstance(m, dict)
+    ) or "(No previous conversation)"
+
+    intent_prompt = INTENT_CLASSIFICATION_PROMPT.format(
+        conversation_history=recent_history_snippet,
+        user_message=body.message,
+    )
+    try:
+        intent_result = await llm.generate_json(intent_prompt, fast_model=True)
+    except Exception as e:
+        logger.error("Error during intent classification: %s", e)
+        err_str = str(e).lower()
+        if "429" in err_str or "quota" in err_str or "resourceexhausted" in err_str:
+            raise HTTPException(status_code=429, detail="LLM Rate limit exceeded. Please try again later.")
+        intent_result = {"intent": "department_query", "confidence": 0.5}
+
     intent = intent_result.get("intent", "general_query")
     confidence = float(intent_result.get("confidence", 0.5))
 
+    # Follow-up heuristic guardrail:
+    # If classified as general_query but conversation history exists and user message
+    # has follow-up cues (pronouns, contact keywords, short follow-up), route to department_query
+    if intent == "general_query" and conversation_context:
+        tokens = set(re.findall(r"\b\w+\b", body.message.lower()))
+        follow_up_cues = {
+            "he", "his", "him", "she", "her", "it", "its", "they", "them", "their",
+            "who", "where", "when", "email", "mail", "cabin", "chamber", "room", "office",
+            "contact", "phone", "prereq", "prerequisite", "syllabus", "credits", "instructor"
+        }
+        if (tokens & follow_up_cues) or len(tokens) <= 5:
+            logger.info("Overriding intent from 'general_query' to 'department_query' for follow-up message: '%s'", body.message)
+            intent = "department_query"
+
     # Fallback for unrecognized intents
     if intent not in ("department_query", "calendar_query", "general_query"):
-        logger.warning("Unrecognized intent '%s', falling back to general_query", intent)
-        intent = "general_query"
+        logger.warning("Unrecognized intent '%s', falling back to department_query", intent)
+        intent = "department_query"
 
     from fastapi.responses import StreamingResponse
 
@@ -554,6 +588,45 @@ async def synthesize_session_memory(
 # ── Intent Handlers ─────────────────────────────────────────────────────────
 
 
+async def _condense_query_for_rag(
+    llm: Any,
+    user_message: str,
+    conversation_context: str,
+) -> str:
+    """Rewrite follow-up questions into standalone search queries for vector retrieval.
+
+    Resolves pronouns ('he', 'his', 'him', 'she', 'her', 'it', 'they', 'this', 'that')
+    using recent conversation history so vector search finds relevant documents.
+    """
+    if not conversation_context or not conversation_context.strip():
+        return user_message
+
+    prompt = (
+        "You are an expert search query reformulator for a university department knowledge base.\n"
+        "Given the conversation history and a follow-up user question, rewrite the question into a concise, "
+        "standalone search query. Resolve pronouns (e.g. 'he', 'his', 'him', 'she', 'her', 'it', 'they', 'this', 'that') "
+        "and elliptical references into the specific person, course, room, syllabus, or topic mentioned in the conversation.\n\n"
+        "Rules:\n"
+        "- Output ONLY the rewritten standalone query without quotation marks, preamble, or explanation.\n"
+        "- Do NOT answer the question.\n"
+        "- If the question is already fully self-contained and mentions the subject explicitly, return it as-is.\n\n"
+        f"Conversation History:\n{conversation_context[-1200:]}\n\n"
+        f"Follow-up Question: {user_message}\n\n"
+        "Standalone Search Query:"
+    )
+    try:
+        reformulated = await llm.generate(prompt, fast_model=True)
+        cleaned = reformulated.strip().strip('"\'`')
+        cleaned = re.sub(r"^(Standalone Search Query:\s*)+", "", cleaned, flags=re.IGNORECASE).strip()
+        if cleaned and len(cleaned) > 2:
+            logger.info("RAG query rewritten: '%s' -> '%s'", user_message, cleaned)
+            return cleaned
+    except Exception as e:
+        logger.warning("Query condensation failed, using raw query: %s", e)
+
+    return user_message
+
+
 async def _handle_department_query(
     llm: Any,
     user_message: str,
@@ -563,24 +636,49 @@ async def _handle_department_query(
     """Handle department-specific queries using RAG retrieval."""
     db = get_supabase_client()
 
+    # Rewrite follow-up question into a standalone search query
+    search_query = await _condense_query_for_rag(llm, user_message, conversation_context)
+
     # Generate query embedding
-    query_embedding = await llm.embed_query(user_message)
+    query_embedding = await llm.embed_query(search_query)
 
     # Retrieve relevant chunks via pgvector similarity search
     match_result = db.rpc(
         "match_chunks",
         {
             "query_embedding": query_embedding,
-            "match_threshold": 0.4,
-            "match_count": 6,
+            "match_threshold": 0.35,
+            "match_count": 8,
         },
     ).execute()
 
+    chunks = match_result.data or []
+
+    # If the rewritten query returned few results and differs from the user message, also query with user_message
+    if search_query != user_message and len(chunks) < 3:
+        try:
+            raw_embedding = await llm.embed_query(user_message)
+            raw_matches = db.rpc(
+                "match_chunks",
+                {
+                    "query_embedding": raw_embedding,
+                    "match_threshold": 0.35,
+                    "match_count": 4,
+                },
+            ).execute()
+            seen_ids = {c["id"] for c in chunks}
+            for c in (raw_matches.data or []):
+                if c["id"] not in seen_ids:
+                    chunks.append(c)
+                    seen_ids.add(c["id"])
+        except Exception:
+            pass
+
     # Build RAG context
-    if match_result.data:
+    if chunks:
         rag_context = "\n\n---\n\n".join(
             f"**Source: {chunk['file_name']}** (Relevance: {chunk['similarity']:.2f})\n{chunk['content']}"
-            for chunk in match_result.data
+            for chunk in chunks
         )
     else:
         rag_context = "(No relevant documents found in the knowledge base.)"
@@ -603,20 +701,45 @@ async def _handle_department_query_stream(
     """Handle department-specific queries using RAG retrieval and stream the response."""
     db = get_supabase_client()
 
-    query_embedding = await llm.embed_query(user_message)
+    # Rewrite follow-up question into a standalone search query
+    search_query = await _condense_query_for_rag(llm, user_message, conversation_context)
+
+    query_embedding = await llm.embed_query(search_query)
     match_result = db.rpc(
         "match_chunks",
         {
             "query_embedding": query_embedding,
-            "match_threshold": 0.4,
-            "match_count": 6,
+            "match_threshold": 0.35,
+            "match_count": 8,
         },
     ).execute()
 
-    if match_result.data:
+    chunks = match_result.data or []
+
+    # If the rewritten query returned few results and differs from the user message, also query with user_message
+    if search_query != user_message and len(chunks) < 3:
+        try:
+            raw_embedding = await llm.embed_query(user_message)
+            raw_matches = db.rpc(
+                "match_chunks",
+                {
+                    "query_embedding": raw_embedding,
+                    "match_threshold": 0.35,
+                    "match_count": 4,
+                },
+            ).execute()
+            seen_ids = {c["id"] for c in chunks}
+            for c in (raw_matches.data or []):
+                if c["id"] not in seen_ids:
+                    chunks.append(c)
+                    seen_ids.add(c["id"])
+        except Exception:
+            pass
+
+    if chunks:
         rag_context = "\n\n---\n\n".join(
             f"**Source: {chunk['file_name']}** (Relevance: {chunk['similarity']:.2f})\n{chunk['content']}"
-            for chunk in match_result.data
+            for chunk in chunks
         )
     else:
         rag_context = "(No relevant documents found in the knowledge base.)"

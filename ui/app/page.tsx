@@ -157,7 +157,7 @@ function LandingContent() {
             <div className={styles.googleIconWrapper}>
               <GoogleIcon />
             </div>
-            <span>{loading ? "SIGNING IN..." : "SIGN IN WITH GOOGLE"}</span>
+            <span>{loading ? "SIGNING IN..." : (process.env.NEXT_PUBLIC_LOCAL_AUTH === "true" ? "ENTER AS LOCAL ADMIN" : "SIGN IN WITH GOOGLE")}</span>
           </button>
         </div>
       </main>

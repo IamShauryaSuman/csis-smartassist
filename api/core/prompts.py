@@ -13,16 +13,20 @@ INTENT_CLASSIFICATION_PROMPT = """You are an intent classifier for CSIS SmartAss
 
 Classify the user's message into EXACTLY ONE of these three intents:
 
-1. "department_query" — Any question about the CSIS department specifically: courses, syllabi, prerequisites, faculty, policies, rules, regulations, academic procedures, department events, or institutional information specific to BITS Pilani Goa CSIS.
+1. "department_query" — Any question about the CSIS department specifically: courses, syllabi, prerequisites, faculty (including their cabin/chamber, contact details, email, phone, research areas), policies, rules, regulations, academic procedures, department events, or institutional information specific to BITS Pilani Goa CSIS.
+CRITICAL: If the user message is a follow-up question (e.g. "What's his email?", "Where is that located?", "Who teaches it?", "What are the prerequisites?", "When does it meet?") referring to a person, course, or department topic mentioned in the Conversation History, you MUST classify it as "department_query".
 
 2. "calendar_query" — Any request involving room reservations, lab bookings, space availability, scheduling meetings, or checking when a room/lab/lecture hall is free.
 
 3. "general_query" — General computer science, programming, or academic questions that are NOT specific to BITS Pilani (e.g., "What is OOP?", "Explain binary search", "What are design patterns?").
 
-Respond with ONLY a JSON object in this exact format, no other text:
-{{"intent": "<one of: department_query, calendar_query, general_query>", "confidence": <float between 0 and 1>}}
+Recent Conversation History:
+{conversation_history}
 
-User message: {user_message}"""
+Current User Message: {user_message}
+
+Respond with ONLY a JSON object in this exact format, no other text:
+{{"intent": "<one of: department_query, calendar_query, general_query>", "confidence": <float between 0 and 1>}}"""
 
 # ────────────────────────────────────────────────────────────────────────────
 # DEPARTMENT QUERY (RAG-augmented)

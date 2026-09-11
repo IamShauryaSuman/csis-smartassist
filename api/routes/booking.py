@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
 
+from core.config import get_settings
 from core.database import get_supabase_client
 from core.rooms import get_all_rooms, get_room_by_id
 from services.calendar import create_calendar_event
@@ -64,6 +65,10 @@ class BookingResponse(BaseModel):
 
 def _extract_user_id(authorization: str) -> str:
     """Validate JWT and extract user ID."""
+    settings = get_settings()
+    if getattr(settings, "local_auth", False):
+        return getattr(settings, "local_user_id", "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671")
+
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header.")
 
@@ -78,6 +83,10 @@ def _extract_user_id(authorization: str) -> str:
 
 def _require_admin(user_id: str) -> None:
     """Verify the user has admin privileges."""
+    settings = get_settings()
+    if getattr(settings, "local_auth", False):
+        return  # In local mode, admin access is granted
+
     db = get_supabase_client()
     profile = (
         db.table("profiles")
@@ -407,20 +416,9 @@ async def update_booking_status(
     updated_booking = result.data[0]
 
     # ── Post-approval actions ───────────────────────────────────────────────
-    if body.status == "approved":
-        # Create Google Calendar event
-        try:
-            await create_calendar_event(
-                room_id=booking["room_id"],
-                title=booking["title"],
-                start_time=datetime.fromisoformat(booking["start_time"]),
-                end_time=datetime.fromisoformat(booking["end_time"]),
-                description=booking.get("description", ""),
-            )
-        except Exception:
-            logger.exception("Failed to create calendar event for booking %s", booking_id)
-
-    # Send email notification
+    # Fetch requester profile for notifications and calendar invitations
+    requester_email = ""
+    requester_name = "Student"
     requester = (
         db.table("profiles")
         .select("email, full_name")
@@ -429,10 +427,38 @@ async def update_booking_status(
         .execute()
     )
     if requester.data:
+        requester_email = requester.data.get("email", "")
+        requester_name = requester.data.get("full_name", "Student")
+
+    if body.status == "approved":
+        # Create Google Calendar event
+        try:
+            cal_event = await create_calendar_event(
+                room_id=booking["room_id"],
+                title=f"[{booking.get('room_name') or 'Booking'}] {booking['title']}",
+                start_time=datetime.fromisoformat(booking["start_time"]),
+                end_time=datetime.fromisoformat(booking["end_time"]),
+                description=(
+                    f"Booked by: {requester_name} ({requester_email})\n\n"
+                    f"Room: {booking.get('room_name') or booking['room_id']}\n"
+                    f"Description: {booking.get('description', '')}\n"
+                    f"Admin notes: {body.admin_notes or 'None'}"
+                ),
+                attendee_email=requester_email,
+            )
+            if cal_event:
+                logger.info("Successfully created calendar event for booking %s: %s", booking_id, cal_event.get("htmlLink"))
+            else:
+                logger.warning("Calendar event creation returned None for booking %s", booking_id)
+        except Exception:
+            logger.exception("Failed to create calendar event for booking %s", booking_id)
+
+    # Send email notification
+    if requester_email:
         try:
             await send_booking_notification(
-                to_email=requester.data["email"],
-                user_name=requester.data.get("full_name", "Student"),
+                to_email=requester_email,
+                user_name=requester_name,
                 booking_title=booking["title"],
                 description=booking.get("description", ""),
                 room_name=booking["room_name"],
@@ -455,3 +481,61 @@ async def list_rooms(authorization: str = Header(...)):
     """Return the full rooms manifest."""
     _extract_user_id(authorization)  # Ensure authenticated
     return await get_all_rooms()
+
+
+# ── Diagnostic Test Endpoints ────────────────────────────────────────────────
+
+
+@router.post("/test-email")
+async def test_email_endpoint(
+    target_email: str = Query(..., description="Email address to receive the test notification"),
+    authorization: str = Header(...),
+):
+    """Test sending an email notification via Gmail API."""
+    _extract_user_id(authorization)
+    success = await send_booking_notification(
+        to_email=target_email,
+        user_name="Test User",
+        booking_title="Test Room Booking Notification",
+        description="This is a test booking notification to verify Gmail API delivery.",
+        room_name="CSIS Lab 1 (CC-101)",
+        start_time="2026-09-12 10:00 AM",
+        end_time="2026-09-12 12:00 PM",
+        status="approved",
+        admin_notes="Verification test initiated via /api/bookings/test-email.",
+    )
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to send test email. Check server logs.")
+    return {"status": "success", "sent_to": target_email}
+
+
+@router.post("/test-calendar")
+async def test_calendar_endpoint(
+    room_id: str = Query("dlt_8", description="Room ID to test (e.g. dlt_8, lab_1)"),
+    authorization: str = Header(...),
+):
+    """Test inserting a test event into Google Calendar."""
+    _extract_user_id(authorization)
+    from datetime import timedelta
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist_tz)
+    cal_event = await create_calendar_event(
+        room_id=room_id,
+        title=f"[Test] SmartAssist Calendar Check ({room_id})",
+        start_time=now + timedelta(hours=1),
+        end_time=now + timedelta(hours=2),
+        description=f"Automated diagnostic test event from CSIS SmartAssist for room {room_id}.",
+    )
+    if not cal_event:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create calendar event. Check container logs (`podman logs smartassist-api`) for details.",
+        )
+    return {
+        "status": "success",
+        "room_id": room_id,
+        "event_id": cal_event.get("id"),
+        "html_link": cal_event.get("htmlLink"),
+        "calendar_organizer": cal_event.get("organizer", {}).get("email"),
+    }
+

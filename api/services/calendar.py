@@ -110,7 +110,7 @@ async def create_calendar_event(
     description: str = "",
     attendee_email: str = "",
 ) -> dict[str, Any] | None:
-    """Create a calendar event on the specified room's calendar.
+    """Create a calendar event on the specified room's calendar or fallback calendar.
 
     Called when an admin approves a booking request.
 
@@ -125,43 +125,107 @@ async def create_calendar_event(
     Returns:
         The created event resource, or None on failure.
     """
+    settings = get_settings()
     room = await get_room_by_id(room_id)
-
-    if not room:
-        logger.error("Room not found: %s", room_id)
-        return None
+    room_name = room["name"] if room else room_id
 
     try:
         service = _get_calendar_service()
-
-        event_body: dict[str, Any] = {
-            "summary": title,
-            "description": description,
-            "start": {
-                "dateTime": start_time.isoformat(),
-                "timeZone": "Asia/Kolkata",
-            },
-            "end": {
-                "dateTime": end_time.isoformat(),
-                "timeZone": "Asia/Kolkata",
-            },
-        }
-
-        if attendee_email:
-            event_body["attendees"] = [{"email": attendee_email}]
-
-        event = (
-            service.events()
-            .insert(calendarId=room["calendar_id"], body=event_body)
-            .execute()
-        )
-
-        logger.info("Created calendar event: %s on %s", event.get("id"), room["name"])
-        return event
-
-    except Exception:
-        logger.exception("Failed to create calendar event for room %s", room_id)
+    except Exception as e:
+        logger.error("Cannot create calendar event — Google Calendar service unavailable: %s", e)
         return None
+
+    # Ensure timezone awareness (default to IST: UTC+5:30)
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    if start_time.tzinfo is None:
+        start_time = start_time.replace(tzinfo=ist_tz)
+    if end_time.tzinfo is None:
+        end_time = end_time.replace(tzinfo=ist_tz)
+
+    event_body: dict[str, Any] = {
+        "summary": title,
+        "description": description,
+        "start": {
+            "dateTime": start_time.isoformat(),
+            "timeZone": "Asia/Kolkata",
+        },
+        "end": {
+            "dateTime": end_time.isoformat(),
+            "timeZone": "Asia/Kolkata",
+        },
+    }
+
+    raw_override = getattr(settings, "notification_override_email", "")
+    override_email = raw_override if isinstance(raw_override, str) else ""
+    effective_attendee = override_email if override_email else attendee_email
+    if effective_attendee:
+        event_body["attendees"] = [{"email": effective_attendee}]
+
+    # Determine candidate calendars in priority order:
+    # 1. Configured global calendar override (GOOGLE_CALENDAR_ID)
+    # 2. Room-specific calendar_id
+    # 3. Service account's "primary" calendar
+    candidates: list[str] = []
+    if settings.google_calendar_id:
+        candidates.append(settings.google_calendar_id)
+    if room and room.get("calendar_id"):
+        candidates.append(room["calendar_id"])
+    if "primary" not in candidates:
+        candidates.append("primary")
+
+    last_error = None
+    for cal_id in candidates:
+        try:
+            logger.info("Attempting to insert calendar event into '%s'...", cal_id)
+            event = (
+                service.events()
+                .insert(
+                    calendarId=cal_id,
+                    body=event_body,
+                    sendUpdates="all" if effective_attendee else "none",
+                )
+                .execute()
+            )
+            logger.info(
+                "Successfully created calendar event '%s' on calendar '%s' for room '%s'",
+                event.get("id"),
+                cal_id,
+                room_name,
+            )
+            return event
+        except Exception as e:
+            if "attendee" in str(e).lower() and "attendees" in event_body:
+                logger.warning("Calendar '%s' rejected attendee: %s. Retrying without attendees...", cal_id, e)
+                body_no_attendees = {k: v for k, v in event_body.items() if k != "attendees"}
+                try:
+                    event = (
+                        service.events()
+                        .insert(
+                            calendarId=cal_id,
+                            body=body_no_attendees,
+                            sendUpdates="none",
+                        )
+                        .execute()
+                    )
+                    logger.info(
+                        "Successfully created calendar event '%s' on calendar '%s' for room '%s' (without attendees)",
+                        event.get("id"),
+                        cal_id,
+                        room_name,
+                    )
+                    return event
+                except Exception as retry_err:
+                    e = retry_err
+            last_error = e
+            logger.warning("Failed to insert into calendar '%s': %s", cal_id, e)
+            continue
+
+    logger.error(
+        "All calendar candidates failed for booking in room '%s'. Last error: %s",
+        room_name,
+        last_error,
+    )
+    return None
 
 
 async def format_availability_for_llm(

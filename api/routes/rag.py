@@ -68,6 +68,10 @@ class RagStatsResponse(BaseModel):
 
 def _extract_user_id(authorization: str) -> str:
     """Validate JWT and extract user ID."""
+    settings = get_settings()
+    if getattr(settings, "local_auth", False):
+        return getattr(settings, "local_user_id", "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671")
+
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header.")
     token = authorization.removeprefix("Bearer ").strip()
@@ -80,6 +84,10 @@ def _extract_user_id(authorization: str) -> str:
 
 def _require_admin(user_id: str) -> None:
     """Verify admin privileges."""
+    settings = get_settings()
+    if getattr(settings, "local_auth", False):
+        return  # In local mode, admin access is granted
+
     db = get_supabase_client()
     profile = (
         db.table("profiles").select("is_admin").eq("id", user_id).single().execute()

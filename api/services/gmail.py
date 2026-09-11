@@ -159,6 +159,13 @@ async def send_booking_notification(
         admin_notes=admin_notes,
     )
 
+    raw_override = getattr(settings, "notification_override_email", "")
+    override_email = raw_override if isinstance(raw_override, str) else ""
+    actual_to = override_email if override_email else to_email
+    subject = f"Booking {status.upper()} - {booking_title}"
+    if override_email:
+        subject = f"[REDIRECTED from {to_email}] {subject}"
+
     try:
         credentials = Credentials(
             token=None,
@@ -166,13 +173,14 @@ async def send_booking_notification(
             client_id=settings.gmail_client_id,
             client_secret=settings.gmail_client_secret,
             token_uri="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/gmail.send"],
         )
         service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
         
         message = MIMEMultipart()
-        message["To"] = to_email
+        message["To"] = actual_to
         message["From"] = settings.gmail_sender_address
-        message["Subject"] = f"Booking {status.upper()} - {booking_title}"
+        message["Subject"] = subject
         
         msg_text = MIMEText(html, "html")
         message.attach(msg_text)
@@ -184,7 +192,7 @@ async def send_booking_notification(
             body={"raw": raw_message}
         ).execute()
         
-        logger.info("Email sent to %s — Gmail ID: %s", to_email, result.get("id"))
+        logger.info("Email sent to %s (intended: %s) — Gmail ID: %s", actual_to, to_email, result.get("id"))
         return True
 
     except Exception:
@@ -296,6 +304,13 @@ async def send_admin_new_booking_notification(
         end_time=end_time,
     )
 
+    raw_override = getattr(settings, "notification_override_email", "")
+    override_email = raw_override if isinstance(raw_override, str) else ""
+    actual_admins = [override_email] if override_email else admin_emails
+    subject = f"ACTION REQUIRED: New Booking Request - {booking_title}"
+    if override_email:
+        subject = f"[REDIRECTED from admins] {subject}"
+
     try:
         credentials = Credentials(
             token=None,
@@ -303,14 +318,15 @@ async def send_admin_new_booking_notification(
             client_id=settings.gmail_client_id,
             client_secret=settings.gmail_client_secret,
             token_uri="https://oauth2.googleapis.com/token",
+            scopes=["https://www.googleapis.com/auth/gmail.send"],
         )
         service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
         
         message = MIMEMultipart()
         # Join admin emails or use BCC if preferred, but for now we'll put them in To.
-        message["To"] = ", ".join(admin_emails)
+        message["To"] = ", ".join(actual_admins)
         message["From"] = settings.gmail_sender_address
-        message["Subject"] = f"ACTION REQUIRED: New Booking Request - {booking_title}"
+        message["Subject"] = subject
         
         msg_text = MIMEText(html, "html")
         message.attach(msg_text)
@@ -322,7 +338,7 @@ async def send_admin_new_booking_notification(
             body={"raw": raw_message}
         ).execute()
         
-        logger.info("Admin notification sent to %s — Gmail ID: %s", admin_emails, result.get("id"))
+        logger.info("Admin notification sent to %s (intended: %s) — Gmail ID: %s", actual_admins, admin_emails, result.get("id"))
         return True
 
     except Exception:

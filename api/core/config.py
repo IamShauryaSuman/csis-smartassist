@@ -25,24 +25,30 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # ── Local Auth (intranet deployment without Google OAuth) ──────────────
+    local_auth: bool = False
+    local_user_id: str = "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671"
+
     # ── Supabase ────────────────────────────────────────────────────────────
-    next_public_supabase_url: str
-    supabase_service_role_key: str
+    next_public_supabase_url: str = ""
+    supabase_service_role_key: str = ""
 
     # ── Google Gemini ───────────────────────────────────────────────────────
-    gemini_api_key: str
+    gemini_api_key: str = ""
 
     # ── Google Service Account (Base64-encoded JSON) ────────────────────────
     google_service_account_json_b64: str = ""
 
-    # ── Google Drive ────────────────────────────────────────────────────────
+    # ── Google Drive & Calendar ─────────────────────────────────────────────
     google_drive_folder_id: str = ""
+    google_calendar_id: str = ""
 
     # ── Gmail API (OAuth) ───────────────────────────────────────────────────
     gmail_client_id: str = ""
     gmail_client_secret: str = ""
     gmail_refresh_token: str = ""
     gmail_sender_address: str = "CSIS SmartAssist <noreply@yourdomain.com>"
+    notification_override_email: str = ""  # For local/testing redirects
 
     # ── Application ─────────────────────────────────────────────────────────
     allowed_email_domain: str = "goa.bits-pilani.ac.in"
@@ -58,6 +64,15 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     openrouter_api_key: str = ""
     openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+
+    # ── AI Provider Toggles ─────────────────────────────────────────────────
+    llm_provider: str = "gemini"  # Options: gemini, ollama
+    embedding_provider: str = "gemini"  # Options: gemini, ollama
+
+    # ── Ollama Local Setup ──────────────────────────────────────────────────
+    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_model: str = "qwen2.5:7b"
+    ollama_embedding_model: str = "nomic-embed-text"
 
     @property
     def google_service_account_info(self) -> dict[str, Any]:
