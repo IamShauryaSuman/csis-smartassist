@@ -129,6 +129,7 @@ async def send_booking_notification(
     end_time: str,
     status: str,
     admin_notes: str = "",
+    raise_exception: bool = False,
 ) -> bool:
     """Send a booking status notification email via Gmail API.
 
@@ -142,6 +143,7 @@ async def send_booking_notification(
         end_time: Formatted end time string.
         status: One of 'pending', 'approved', 'rejected'.
         admin_notes: Optional admin notes.
+        raise_exception: Whether to raise an exception on error (useful for diagnostic endpoints).
 
     Returns:
         True if the email was sent successfully, False otherwise.
@@ -167,11 +169,16 @@ async def send_booking_notification(
         subject = f"[REDIRECTED from {to_email}] {subject}"
 
     try:
+        client_id = (settings.gmail_client_id or "").strip("\"' \t\r\n")
+        client_secret = (settings.gmail_client_secret or "").strip("\"' \t\r\n")
+        refresh_token = (settings.gmail_refresh_token or "").strip("\"' \t\r\n")
+        sender_address = (settings.gmail_sender_address or "").strip("\"' \t\r\n")
+
         credentials = Credentials(
             token=None,
-            refresh_token=settings.gmail_refresh_token,
-            client_id=settings.gmail_client_id,
-            client_secret=settings.gmail_client_secret,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
             token_uri="https://oauth2.googleapis.com/token",
             scopes=["https://www.googleapis.com/auth/gmail.send"],
         )
@@ -179,7 +186,7 @@ async def send_booking_notification(
         
         message = MIMEMultipart()
         message["To"] = actual_to
-        message["From"] = settings.gmail_sender_address
+        message["From"] = sender_address
         message["Subject"] = subject
         
         msg_text = MIMEText(html, "html")
@@ -195,8 +202,10 @@ async def send_booking_notification(
         logger.info("Email sent to %s (intended: %s) — Gmail ID: %s", actual_to, to_email, result.get("id"))
         return True
 
-    except Exception:
+    except Exception as e:
         logger.exception("Failed to send booking notification to %s", to_email)
+        if raise_exception:
+            raise
         return False
 
 
@@ -312,11 +321,16 @@ async def send_admin_new_booking_notification(
         subject = f"[REDIRECTED from admins] {subject}"
 
     try:
+        client_id = (settings.gmail_client_id or "").strip("\"' \t\r\n")
+        client_secret = (settings.gmail_client_secret or "").strip("\"' \t\r\n")
+        refresh_token = (settings.gmail_refresh_token or "").strip("\"' \t\r\n")
+        sender_address = (settings.gmail_sender_address or "").strip("\"' \t\r\n")
+
         credentials = Credentials(
             token=None,
-            refresh_token=settings.gmail_refresh_token,
-            client_id=settings.gmail_client_id,
-            client_secret=settings.gmail_client_secret,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
             token_uri="https://oauth2.googleapis.com/token",
             scopes=["https://www.googleapis.com/auth/gmail.send"],
         )
@@ -325,7 +339,7 @@ async def send_admin_new_booking_notification(
         message = MIMEMultipart()
         # Join admin emails or use BCC if preferred, but for now we'll put them in To.
         message["To"] = ", ".join(actual_admins)
-        message["From"] = settings.gmail_sender_address
+        message["From"] = sender_address
         message["Subject"] = subject
         
         msg_text = MIMEText(html, "html")

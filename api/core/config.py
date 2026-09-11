@@ -12,6 +12,7 @@ import json
 from functools import lru_cache
 from typing import Any
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,17 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def strip_quotes(cls, values: Any) -> Any:
+        """Strip surrounding quotes and whitespace from environment variables (e.g. from env_file)."""
+        if isinstance(values, dict):
+            return {
+                k: (v.strip("\"' \t\r\n") if isinstance(v, str) else v)
+                for k, v in values.items()
+            }
+        return values
 
     # ── Local Auth (intranet deployment without Google OAuth) ──────────────
     local_auth: bool = False

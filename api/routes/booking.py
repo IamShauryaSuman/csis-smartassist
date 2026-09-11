@@ -493,20 +493,27 @@ async def test_email_endpoint(
 ):
     """Test sending an email notification via Gmail API."""
     _extract_user_id(authorization)
-    success = await send_booking_notification(
-        to_email=target_email,
-        user_name="Test User",
-        booking_title="Test Room Booking Notification",
-        description="This is a test booking notification to verify Gmail API delivery.",
-        room_name="CSIS Lab 1 (CC-101)",
-        start_time="2026-09-12 10:00 AM",
-        end_time="2026-09-12 12:00 PM",
-        status="approved",
-        admin_notes="Verification test initiated via /api/bookings/test-email.",
-    )
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to send test email. Check server logs.")
-    return {"status": "success", "sent_to": target_email}
+    try:
+        success = await send_booking_notification(
+            to_email=target_email,
+            user_name="Test User",
+            booking_title="Test Room Booking Notification",
+            description="This is a test booking notification to verify Gmail API delivery.",
+            room_name="CSIS Lab 1 (CC-101)",
+            start_time="2026-09-12 10:00 AM",
+            end_time="2026-09-12 12:00 PM",
+            status="approved",
+            admin_notes="Verification test initiated via /api/bookings/test-email.",
+            raise_exception=True,
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to send test email. Check server logs.")
+        return {"status": "success", "sent_to": target_email}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send test email: {type(e).__name__}: {str(e)}")
+
 
 
 @router.post("/test-calendar")
