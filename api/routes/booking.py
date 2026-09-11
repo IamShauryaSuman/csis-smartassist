@@ -163,23 +163,38 @@ async def create_booking(
     booking_data = result.data[0]
 
     # Fetch requester name
-    requester = (
-        db.table("profiles")
-        .select("full_name")
-        .eq("id", user_id)
-        .single()
-        .execute()
-    )
-    requester_name = requester.data.get("full_name", "A student") if requester.data else "A student"
+    requester_name = "A student"
+    try:
+        requester = (
+            db.table("profiles")
+            .select("full_name")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        )
+        if requester.data:
+            requester_name = requester.data.get("full_name", "") or "A student"
+    except Exception:
+        if getattr(get_settings(), "local_auth", False):
+            requester_name = "SmartAssist Admin"
 
     # Fetch all admins to notify
-    admins = (
-        db.table("profiles")
-        .select("email")
-        .eq("is_admin", True)
-        .execute()
-    )
-    admin_emails = [admin["email"] for admin in admins.data if admin.get("email")]
+    admin_emails = []
+    try:
+        admins = (
+            db.table("profiles")
+            .select("email")
+            .eq("is_admin", True)
+            .execute()
+        )
+        admin_emails = [admin["email"] for admin in admins.data if admin.get("email")]
+    except Exception:
+        pass
+
+    settings = get_settings()
+    override_email = (getattr(settings, "notification_override_email", "") or "").strip("\"' \t\r\n")
+    if override_email and not admin_emails:
+        admin_emails = [override_email]
 
     if admin_emails:
         asyncio.create_task(
@@ -416,19 +431,33 @@ async def update_booking_status(
     updated_booking = result.data[0]
 
     # ── Post-approval actions ───────────────────────────────────────────────
+    settings = get_settings()
+    override_email = (getattr(settings, "notification_override_email", "") or "").strip("\"' \t\r\n")
+
     # Fetch requester profile for notifications and calendar invitations
     requester_email = ""
     requester_name = "Student"
-    requester = (
-        db.table("profiles")
-        .select("email, full_name")
-        .eq("id", booking["user_id"])
-        .single()
-        .execute()
-    )
-    if requester.data:
-        requester_email = requester.data.get("email", "")
-        requester_name = requester.data.get("full_name", "Student")
+    try:
+        requester = (
+            db.table("profiles")
+            .select("email, full_name")
+            .eq("id", booking["user_id"])
+            .single()
+            .execute()
+        )
+        if requester.data:
+            requester_email = requester.data.get("email", "") or ""
+            requester_name = requester.data.get("full_name", "") or "Student"
+    except Exception as e:
+        logger.warning("Could not fetch profile for user_id %s: %s", booking.get("user_id"), e)
+
+    # In local auth mode or if profile has no email, fallback gracefully
+    if not requester_email:
+        if getattr(settings, "local_auth", False):
+            requester_email = "smartassist-admin@goa.bits-pilani.ac.in"
+            requester_name = "SmartAssist Admin"
+
+    effective_recipient = override_email if override_email else requester_email
 
     if body.status == "approved":
         # Create Google Calendar event
@@ -439,12 +468,12 @@ async def update_booking_status(
                 start_time=datetime.fromisoformat(booking["start_time"]),
                 end_time=datetime.fromisoformat(booking["end_time"]),
                 description=(
-                    f"Booked by: {requester_name} ({requester_email})\n\n"
+                    f"Booked by: {requester_name} ({effective_recipient or requester_email})\n\n"
                     f"Room: {booking.get('room_name') or booking['room_id']}\n"
                     f"Description: {booking.get('description', '')}\n"
                     f"Admin notes: {body.admin_notes or 'None'}"
                 ),
-                attendee_email=requester_email,
+                attendee_email=effective_recipient or requester_email,
             )
             if cal_event:
                 logger.info("Successfully created calendar event for booking %s: %s", booking_id, cal_event.get("htmlLink"))
@@ -453,20 +482,22 @@ async def update_booking_status(
         except Exception:
             logger.exception("Failed to create calendar event for booking %s", booking_id)
 
-    # Send email notification
-    if requester_email:
+    # Send email notification to user (approved or rejected)
+    if effective_recipient or requester_email:
+        to_addr = requester_email or effective_recipient
         try:
             await send_booking_notification(
-                to_email=requester_email,
+                to_email=to_addr,
                 user_name=requester_name,
                 booking_title=booking["title"],
                 description=booking.get("description", ""),
-                room_name=booking["room_name"],
-                start_time=booking["start_time"],
-                end_time=booking["end_time"],
+                room_name=booking.get("room_name") or booking.get("room_id") or "Room",
+                start_time=str(booking["start_time"]),
+                end_time=str(booking["end_time"]),
                 status=body.status,
                 admin_notes=body.admin_notes,
             )
+            logger.info("Dispatched %s notification to %s for booking %s", body.status, to_addr, booking_id)
         except Exception:
             logger.exception("Failed to send booking notification for %s", booking_id)
 
