@@ -37,6 +37,18 @@ describe('BookingProposal', () => {
     expect(screen.getByText('Submit Request')).toBeInTheDocument();
   });
 
+  it('shows draft times in IST regardless of browser time zone', () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      render(<BookingProposal {...defaultProps} />);
+      expect(screen.getByText(/11:00/)).toBeInTheDocument();
+      expect(screen.getByText(/12:00/)).toBeInTheDocument();
+    } finally {
+      process.env.TZ = originalTz;
+    }
+  });
+
   it('shows DRAFT PROPOSAL badge in draft state', () => {
     render(<BookingProposal {...defaultProps} />);
     expect(screen.getByText('DRAFT PROPOSAL')).toBeInTheDocument();

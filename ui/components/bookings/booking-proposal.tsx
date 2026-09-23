@@ -207,13 +207,13 @@ export default function BookingProposal({
             <div className={styles.row}>
               <span className={styles.rowLabel}>Start</span>
               <span className={styles.rowValue}>
-                {formatDateTime(dbBooking?.start_time || new Date(editForm.start_time).toISOString())}
+                {formatDateTime(dbBooking?.start_time || payload.start_time)}
               </span>
             </div>
             <div className={styles.row}>
               <span className={styles.rowLabel}>End</span>
               <span className={styles.rowValue}>
-                {formatDateTime(dbBooking?.end_time || new Date(editForm.end_time).toISOString())}
+                {formatDateTime(dbBooking?.end_time || payload.end_time)}
               </span>
             </div>
             <hr className={styles.divider} />
@@ -248,13 +248,13 @@ export default function BookingProposal({
             <div className={styles.row}>
               <span className={styles.rowLabel}>Start</span>
               <span className={styles.rowValue}>
-                {formatDateTime(dbBooking?.start_time || new Date(editForm.start_time).toISOString())}
+                {formatDateTime(dbBooking?.start_time || payload.start_time)}
               </span>
             </div>
             <div className={styles.row}>
               <span className={styles.rowLabel}>End</span>
               <span className={styles.rowValue}>
-                {formatDateTime(dbBooking?.end_time || new Date(editForm.end_time).toISOString())}
+                {formatDateTime(dbBooking?.end_time || payload.end_time)}
               </span>
             </div>
             {(dbBooking?.description || editForm.description) && (

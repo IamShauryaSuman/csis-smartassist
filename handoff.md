@@ -3,9 +3,8 @@
 ## Repository and state
 
 - Repository: https://github.com/IamShauryaSuman/csis-smartassist
-- Working directory: `/Users/abhinav/Documents/Codex/2026-09-20/my/csis-smartassist`
-- Branch: `abhinav/calendar` (local only)
-- All implementation changes are uncommitted and unpushed. Run `git status --short --branch` before editing. Do not discard the working tree.
+- Working directory: `/Users/abhinav/Documents/csis_smart_assist/csis-smartassist`
+- Branch: `abhinav/calendar`, pushed to `origin` (commit `654c708` plus the 2026-09-23 review follow-up). Not merged to `main`.
 - `plan.md` is intentionally ignored by `.gitignore` and contains the earlier task plan. This `handoff.md` is **not** ignored and should be included if the work is committed.
 - No Supabase migration, Google Calendar authorization, calendar event, deployment, or other live change has been made from this checkout.
 
@@ -40,14 +39,25 @@ The user asked for the calendar portion of CSIS SmartAssist to be implemented. T
 - `git diff --check` — passed.
 - `.venv/bin/python scripts/connect_calendar.py --help` — passed. Actual OAuth has **not** been run.
 
+## Code review (2026-09-23)
+
+Reviewed the migration, room enablement, booking approval, calendar service, and OAuth helper. No blocking issues. Findings:
+
+- Fixed: the draft booking card showed times parsed from offset-stripped strings, so they were wrong in any browser outside IST. It now formats `payload.start_time`/`end_time` directly; regression test added in `ui/__tests__/booking-proposal.test.tsx`.
+- Deploy order: `get_all_rooms()` filters on `rooms.booking_enabled`, which only exists after migration 007. **Apply migration 007 before deploying this API**, or chat and room listing will error.
+- With only the conference room enabled on `GOOGLE_CALENDAR_ID=primary`, availability uses FreeBusy, so every event on that account's primary calendar counts as busy for the room. This is conservative (never reports a false free slot); keep unrelated personal events off that calendar.
+- Existing pending bookings for the illustrative rooms from migration 004 can be rejected but not approved once 007 disables those rooms. Intended.
+- Approved bookings still cannot be cancelled/rejected afterwards (pre-existing), so there is no path that deletes an approved Calendar event. Out of scope for this phase.
+- Re-verified locally: backend 57 passed, UI 69 passed, `tsc --noEmit` and `npm run build` passed.
+
 ## Remaining work
 
-1. Review the uncommitted diff, especially the migration, room enablement, booking approval, and OAuth helper. Adjust if the user clarifies that D-153 should remain available despite the general-classroom deferral.
+1. If the user clarifies that D-153 should remain available despite the general-classroom deferral, enable it and configure `CLASSROOM_RESTRICTED_*`.
 2. Obtain a **Desktop app** Google OAuth client JSON from the team's Google Cloud project, with Calendar API enabled and consent configured for `smartassist.csis@gmail.com`. A downloaded OAuth JSON exists in `~/Downloads`, but inspection showed it is a **web** client configured only for a Supabase callback, so it does not work with the local Desktop OAuth helper. Do not expose or commit client secrets. Google setup reference: https://developers.google.com/workspace/calendar/api/quickstart/python.
-3. Run the helper with the Desktop client JSON and have the account owner complete the browser sign-in/consent. Do not request passwords or tokens in chat. Set `GOOGLE_CALENDAR_ID=primary` after verifying the account. The current checkout has no `.env`, `api/.env`, or `ui/.env.local`.
+3. Run the helper with the Desktop client JSON and have the account owner complete the browser sign-in/consent. Do not request passwords or tokens in chat. Set `GOOGLE_CALENDAR_ID=primary` after verifying the account. The checkout has no `.env`, `api/.env`, or `ui/.env.local`.
 4. Obtain the project's Supabase access and apply migration 007 after reviewing it against the actual schema/data. No live database credentials are configured locally.
 5. Test a real conference-room booking request, admin approval, Calendar event/link, and conflicting slot. Confirm wording with the user: an empty calendar is only a record of SmartAssist bookings, not a real timetable. Reconcile any actual room schedule before claiming broader availability.
-6. Commit/push/deploy only as directed by the user. No commit has been made so far.
+6. Merge to `main` and deploy only as directed by the user, and only after step 4.
 
 ## Important implementation cautions
 
