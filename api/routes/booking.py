@@ -18,7 +18,14 @@ from pydantic import BaseModel
 from core.config import get_settings
 from core.database import get_supabase_client
 from core.rooms import get_all_rooms, get_room_by_id
-from services.calendar import create_calendar_event
+from core.booking_policy import (
+    BookingPolicyError, BookingPolicyNotConfigured,
+    parse_booking_times, validate_classroom_hours,
+)
+from services.calendar import (
+    create_calendar_event, delete_calendar_event,
+    get_calendar_event_for_booking, query_freebusy,
+)
 from services.gmail import send_admin_new_booking_notification, send_booking_notification
 
 logger = logging.getLogger(__name__)
@@ -35,6 +42,8 @@ class CreateBookingRequest(BaseModel):
     description: str = ""
     start_time: str  # ISO 8601
     end_time: str  # ISO 8601
+    acknowledged_use: bool = False
+    acknowledged_availability: bool = False
 
 
 class UpdateBookingRequest(BaseModel):
@@ -53,6 +62,10 @@ class BookingResponse(BaseModel):
     end_time: str
     status: str
     admin_notes: str | None
+    acknowledged_use: bool = False
+    acknowledged_availability: bool = False
+    calendar_event_id: str | None = None
+    calendar_event_link: str | None = None
     is_locked: bool = False
     locked_at: str | None = None
     locked_by: str | None = None
@@ -99,6 +112,37 @@ def _require_admin(user_id: str) -> None:
         raise HTTPException(status_code=403, detail="Admin access required.")
 
 
+async def _validate_booking_request(body: CreateBookingRequest) -> tuple[dict, datetime, datetime]:
+    room = await get_room_by_id(body.room_id)
+    if not room:
+        raise HTTPException(status_code=400, detail=f"Unknown room ID: {body.room_id}")
+    if room.get("booking_enabled") is False:
+        raise HTTPException(status_code=400, detail="This room is not open for booking.")
+    if not body.acknowledged_use or not body.acknowledged_availability:
+        raise HTTPException(status_code=400, detail="Both booking acknowledgements are required.")
+    try:
+        start, end = parse_booking_times(body.start_time, body.end_time)
+        validate_classroom_hours(room, start, end)
+    except BookingPolicyNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except BookingPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _require_room_available(body.room_id, start, end)
+    return room, start, end
+
+
+async def _require_room_available(room_id: str, start: datetime, end: datetime) -> None:
+    availability = await query_freebusy(start, end, [room_id])
+    busy_periods = availability.get(room_id)
+    if busy_periods is None:
+        raise HTTPException(status_code=503, detail="Room availability could not be confirmed.")
+    for period in busy_periods:
+        busy_start = datetime.fromisoformat(period["start"].replace("Z", "+00:00"))
+        busy_end = datetime.fromisoformat(period["end"].replace("Z", "+00:00"))
+        if start < busy_end and end > busy_start:
+            raise HTTPException(status_code=409, detail="Room is busy at the requested time.")
+
+
 # ── Booking Endpoints ───────────────────────────────────────────────────────
 
 
@@ -114,19 +158,7 @@ async def create_booking(
     user_id = _extract_user_id(authorization)
     db = get_supabase_client()
 
-    # Validate room exists
-    room = await get_room_by_id(body.room_id)
-    if not room:
-        raise HTTPException(status_code=400, detail=f"Unknown room ID: {body.room_id}")
-
-    # Validate time range
-    try:
-        start = datetime.fromisoformat(body.start_time)
-        end = datetime.fromisoformat(body.end_time)
-        if end <= start:
-            raise ValueError("End time must be after start time.")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid time range: {e}")
+    room, start, end = await _validate_booking_request(body)
 
     # Expire any existing pending bookings for this user that overlap in time
     # This ensures a user can reschedule by simply creating a new booking for the same slot.
@@ -151,12 +183,14 @@ async def create_booking(
         .insert({
             "user_id": user_id,
             "room_id": body.room_id,
-            "room_name": body.room_name or room["name"],
+            "room_name": room["name"],
             "title": body.title,
             "description": body.description,
             "start_time": body.start_time,
             "end_time": body.end_time,
             "status": "pending",
+            "acknowledged_use": body.acknowledged_use,
+            "acknowledged_availability": body.acknowledged_availability,
         })
         .execute()
     )
@@ -203,7 +237,7 @@ async def create_booking(
                 requester_name=requester_name,
                 booking_title=body.title,
                 description=body.description or "",
-                room_name=body.room_name or room["name"],
+                room_name=room["name"],
                 start_time=body.start_time,
                 end_time=body.end_time,
             )
@@ -344,23 +378,18 @@ async def update_booking_details(
     if not booking.get("is_locked") or booking.get("locked_by") != user_id:
         raise HTTPException(status_code=403, detail="Booking must be locked by you before editing.")
 
-    # Validate time range
-    try:
-        start = datetime.fromisoformat(body.start_time)
-        end = datetime.fromisoformat(body.end_time)
-        if end <= start:
-            raise ValueError("End time must be after start time.")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid time range: {e}")
+    room, start, end = await _validate_booking_request(body)
 
     # Update the details AND unlock it
     update_data = {
         "room_id": body.room_id,
-        "room_name": body.room_name,
+        "room_name": room["name"],
         "title": body.title,
         "description": body.description,
         "start_time": body.start_time,
         "end_time": body.end_time,
+        "acknowledged_use": body.acknowledged_use,
+        "acknowledged_availability": body.acknowledged_availability,
         "is_locked": False,
         "locked_at": None,
         "locked_by": None,
@@ -416,21 +445,6 @@ async def update_booking_status(
             detail="Booking is currently locked by the user for editing. Please try again later.",
         )
 
-    # Update status
-    update_data: dict[str, Any] = {
-        "status": body.status,
-        "admin_notes": body.admin_notes,
-    }
-    result = (
-        db.table("bookings")
-        .update(update_data)
-        .eq("id", booking_id)
-        .execute()
-    )
-
-    updated_booking = result.data[0]
-
-    # ── Post-approval actions ───────────────────────────────────────────────
     settings = get_settings()
     override_email = (getattr(settings, "notification_override_email", "") or "").strip("\"' \t\r\n")
 
@@ -459,28 +473,72 @@ async def update_booking_status(
 
     effective_recipient = override_email if override_email else requester_email
 
+    update_data: dict[str, Any] = {
+        "status": body.status,
+        "admin_notes": body.admin_notes,
+    }
     if body.status == "approved":
-        # Create Google Calendar event
+        room = await get_room_by_id(booking["room_id"])
+        if not room:
+            raise HTTPException(status_code=400, detail="Booking room no longer exists.")
+        if room.get("booking_enabled") is False:
+            raise HTTPException(status_code=400, detail="This room is not open for booking.")
         try:
-            cal_event = await create_calendar_event(
-                room_id=booking["room_id"],
-                title=f"[{booking.get('room_name') or 'Booking'}] {booking['title']}",
-                start_time=datetime.fromisoformat(booking["start_time"]),
-                end_time=datetime.fromisoformat(booking["end_time"]),
-                description=(
-                    f"Booked by: {requester_name} ({effective_recipient or requester_email})\n\n"
-                    f"Room: {booking.get('room_name') or booking['room_id']}\n"
-                    f"Description: {booking.get('description', '')}\n"
-                    f"Admin notes: {body.admin_notes or 'None'}"
-                ),
-                attendee_email=effective_recipient or requester_email,
-            )
-            if cal_event:
-                logger.info("Successfully created calendar event for booking %s: %s", booking_id, cal_event.get("htmlLink"))
-            else:
-                logger.warning("Calendar event creation returned None for booking %s", booking_id)
+            start, end = parse_booking_times(booking["start_time"], booking["end_time"])
+            validate_classroom_hours(room, start, end)
+        except BookingPolicyNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except BookingPolicyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not booking.get("acknowledged_use") or not booking.get("acknowledged_availability"):
+            raise HTTPException(status_code=400, detail="Booking acknowledgements are missing.")
+        try:
+            cal_event = await get_calendar_event_for_booking(booking["room_id"], booking_id)
         except Exception:
-            logger.exception("Failed to create calendar event for booking %s", booking_id)
+            logger.exception("Failed to inspect calendar event for booking %s", booking_id)
+            raise HTTPException(status_code=503, detail="Calendar could not be checked; booking remains pending.")
+        if not cal_event:
+            await _require_room_available(booking["room_id"], start, end)
+            try:
+                cal_event = await create_calendar_event(
+                    room_id=booking["room_id"],
+                    title=f"[{booking.get('room_name') or 'Booking'}] {booking['title']}",
+                    start_time=start,
+                    end_time=end,
+                    description=(
+                        f"Booked by: {requester_name} ({effective_recipient or requester_email})\n\n"
+                        f"Room: {booking.get('room_name') or booking['room_id']}\n"
+                        f"Description: {booking.get('description', '')}\n"
+                        f"Admin notes: {body.admin_notes or 'None'}"
+                    ),
+                    attendee_email=effective_recipient or requester_email,
+                    booking_id=booking_id,
+                )
+            except Exception:
+                logger.exception("Failed to create calendar event for booking %s", booking_id)
+                cal_event = None
+        if not cal_event or not isinstance(cal_event, dict) or not cal_event.get("id"):
+            raise HTTPException(status_code=503, detail="Calendar event could not be created; booking remains pending.")
+        update_data["calendar_event_id"] = cal_event["id"]
+        update_data["calendar_event_link"] = cal_event.get("htmlLink")
+
+    result = (
+        db.table("bookings")
+        .update(update_data)
+        .eq("id", booking_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    if not result.data:
+        if body.status == "approved" and update_data.get("calendar_event_id"):
+            try:
+                current = db.table("bookings").select("status").eq("id", booking_id).single().execute()
+                if current.data and current.data.get("status") == "rejected":
+                    await delete_calendar_event(booking["room_id"], update_data["calendar_event_id"])
+            except Exception:
+                logger.exception("Could not reconcile calendar event for booking %s", booking_id)
+        raise HTTPException(status_code=409, detail="Booking status changed during approval. Please refresh.")
+    updated_booking = result.data[0]
 
     # Send email notification to user (approved or rejected)
     if effective_recipient or requester_email:
@@ -549,11 +607,11 @@ async def test_email_endpoint(
 
 @router.post("/test-calendar")
 async def test_calendar_endpoint(
-    room_id: str = Query("dlt_8", description="Room ID to test (e.g. dlt_8, lab_1)"),
+    room_id: str = Query("csis_conference_room", description="Enabled room ID to test"),
     authorization: str = Header(...),
 ):
     """Test inserting a test event into Google Calendar."""
-    _extract_user_id(authorization)
+    _require_admin(_extract_user_id(authorization))
     from datetime import timedelta
     ist_tz = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_tz)
@@ -576,4 +634,3 @@ async def test_calendar_endpoint(
         "html_link": cal_event.get("htmlLink"),
         "calendar_organizer": cal_event.get("organizer", {}).get("email"),
     }
-

@@ -28,6 +28,8 @@ export default function BookingProposal({
 }: BookingProposalProps) {
   const [localError, setLocalError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [acknowledgedUse, setAcknowledgedUse] = useState(false);
+  const [acknowledgedAvailability, setAcknowledgedAvailability] = useState(false);
   
   // Track the most recent matching booking from the DB
   const matchingBookings = bookings
@@ -70,12 +72,15 @@ export default function BookingProposal({
         end_time: dbBooking.end_time.substring(0, 16),
         description: dbBooking.description || "",
       });
+      setAcknowledgedUse(Boolean(dbBooking.acknowledged_use));
+      setAcknowledgedAvailability(Boolean(dbBooking.acknowledged_availability));
     }
   }, [dbBooking, isEditing]);
 
   const formatDateTime = (iso: string) => {
     try {
       return new Date(iso).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
         weekday: "short",
         month: "short",
         day: "numeric",
@@ -88,6 +93,10 @@ export default function BookingProposal({
   };
 
   const handleSubmit = async () => {
+    if (!acknowledgedUse || !acknowledgedAvailability) {
+      setLocalError("Please confirm both acknowledgements before submitting.");
+      return;
+    }
     setIsLoading(true);
     setLocalError("");
     try {
@@ -96,8 +105,10 @@ export default function BookingProposal({
         room_name: editForm.room_name,
         title: editForm.title,
         description: editForm.description,
-        start_time: new Date(editForm.start_time).toISOString(),
-        end_time: new Date(editForm.end_time).toISOString(),
+        start_time: payload.start_time,
+        end_time: payload.end_time,
+        acknowledged_use: acknowledgedUse,
+        acknowledged_availability: acknowledgedAvailability,
       });
       // The websocket will update the bookings list and transition state to 'pending'
     } catch (err) {
@@ -144,6 +155,10 @@ export default function BookingProposal({
   const handleSaveEdit = async () => {
     setLocalError("");
     if (currentState === "pending" && dbBooking) {
+      if (!acknowledgedUse || !acknowledgedAvailability) {
+        setLocalError("Please confirm both acknowledgements before saving.");
+        return;
+      }
       setIsLoading(true);
       try {
         await onUpdateBooking(dbBooking.id, {
@@ -151,8 +166,10 @@ export default function BookingProposal({
           room_name: editForm.room_name,
           title: editForm.title,
           description: editForm.description,
-          start_time: new Date(editForm.start_time).toISOString(),
-          end_time: new Date(editForm.end_time).toISOString(),
+          start_time: dbBooking.start_time,
+          end_time: dbBooking.end_time,
+          acknowledged_use: acknowledgedUse,
+          acknowledged_availability: acknowledgedAvailability,
         });
         setIsEditing(false);
       } catch (err) {
@@ -255,6 +272,27 @@ export default function BookingProposal({
 
       {localError && <div className={styles.error}>{localError}</div>}
 
+      {(currentState === "draft" || isEditing) && (
+        <div className={styles.acknowledgements}>
+          <label>
+            <input
+              type="checkbox"
+              checked={acknowledgedUse}
+              onChange={(event) => setAcknowledgedUse(event.target.checked)}
+            />
+            I confirm this request is for permitted academic or study use.
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={acknowledgedAvailability}
+              onChange={(event) => setAcknowledgedAvailability(event.target.checked)}
+            />
+            I understand the calendar shows recorded bookings only; actual room availability is confirmed during approval.
+          </label>
+        </div>
+      )}
+
       <div className={styles.actions}>
         {isEditing ? (
           <>
@@ -274,7 +312,7 @@ export default function BookingProposal({
             )}
             
             {currentState === "draft" && (
-              <button className={styles.confirmBtn} onClick={handleSubmit} disabled={isLoading}>
+              <button className={styles.confirmBtn} onClick={handleSubmit} disabled={isLoading || !acknowledgedUse || !acknowledgedAvailability}>
                 {isLoading ? "Submitting..." : "Submit Request"}
               </button>
             )}

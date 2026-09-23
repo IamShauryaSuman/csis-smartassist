@@ -45,8 +45,14 @@ describe('BookingProposal', () => {
   it('calls onCreateBooking when Submit Request is clicked', async () => {
     render(<BookingProposal {...defaultProps} />);
 
+    const submit = screen.getByText('Submit Request');
+    expect(submit).toBeDisabled();
+    for (const checkbox of screen.getAllByRole('checkbox')) {
+      fireEvent.click(checkbox);
+    }
+
     await act(async () => {
-      fireEvent.click(screen.getByText('Submit Request'));
+      fireEvent.click(submit);
     });
 
     expect(defaultProps.onCreateBooking).toHaveBeenCalledWith(
@@ -55,6 +61,8 @@ describe('BookingProposal', () => {
         room_name: mockPayload.room_name,
         title: mockPayload.title,
         description: mockPayload.description,
+        acknowledged_use: true,
+        acknowledged_availability: true,
       })
     );
   });

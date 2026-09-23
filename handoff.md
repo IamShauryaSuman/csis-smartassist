@@ -1,0 +1,56 @@
+# Calendar implementation handoff
+
+## Repository and state
+
+- Repository: https://github.com/IamShauryaSuman/csis-smartassist
+- Working directory: `/Users/abhinav/Documents/Codex/2026-09-20/my/csis-smartassist`
+- Branch: `abhinav/calendar` (local only)
+- All implementation changes are uncommitted and unpushed. Run `git status --short --branch` before editing. Do not discard the working tree.
+- `plan.md` is intentionally ignored by `.gitignore` and contains the earlier task plan. This `handoff.md` is **not** ignored and should be included if the work is committed.
+- No Supabase migration, Google Calendar authorization, calendar event, deployment, or other live change has been made from this checkout.
+
+## User decisions and scope
+
+The user asked for the calendar portion of CSIS SmartAssist to be implemented. They supplied the Google account `smartassist.csis@gmail.com` and confirmed:
+
+- One shared calendar for room bookings.
+- The account calendar currently has no room schedule; it can be used to build a booking schedule. Do **not** invent an academic timetable or claim that an empty calendar proves physical availability.
+- Ignore general classrooms for now. Current code interprets this as enabling only the **CSIS Conference Room**. D-153 is staged but disabled because it is a general classroom. Confirm this interpretation if the user clarifies otherwise.
+- Defer recurring bookings. The semester-end date is irrelevant in this phase.
+- Academic/study-use and availability acknowledgements are wanted.
+- The user agreed to authorize access to the shared Google account, but no usable Calendar OAuth credentials or live sign-in have been supplied yet.
+
+## Implemented locally
+
+- `supabase/migrations/007_priority_classrooms.sql` adds `booking_enabled` and `is_general_classroom` to rooms, stages D-153 disabled, enables the CSIS Conference Room, and adds booking acknowledgements and Calendar event fields. Older illustrative room seeds remain disabled by default.
+- `api/core/rooms.py` returns only enabled rooms for proposals and uses a shared `GOOGLE_CALENDAR_ID` when a room-specific calendar ID is absent.
+- `api/services/calendar.py` supports account OAuth or service-account access. It separates events on a shared calendar by private room metadata or unambiguous title/location, treats unknown events/errors as unknown availability, and creates events with deterministic IDs for retry recovery.
+- `api/routes/booking.py` requires acknowledgements, checks the slot on request and approval, refuses disabled rooms, and records approval only after Calendar event creation. The diagnostic Calendar endpoint now requires admin access.
+- `api/core/booking_policy.py` implements configurable college-hours restrictions for general classrooms, but those rooms are disabled now.
+- Chat prompt and booking UI describe an empty calendar as **no recorded booking**, with actual room availability subject to admin approval. UI displays event links and Asia/Kolkata times.
+- `.env.example`, `docs/SETUP.md`, and `docs/CALENDAR_SETUP.md` document configuration. `scripts/connect_calendar.py` is an interactive Desktop OAuth helper that checks the signed-in primary calendar belongs to `smartassist.csis@gmail.com` and stores credentials in ignored `.env` with restrictive permissions. It does not activate `GOOGLE_CALENDAR_ID` automatically.
+- `api/requirements.txt` adds `google-auth-oauthlib`.
+
+## Verification already run
+
+- Backend: `cd api && ../.venv/bin/pytest -q --ignore=tests/test_db.py` — **57 passed**. `test_db.py` is excluded because it constructs a Supabase client at import time and no Supabase URL is configured here.
+- UI: `cd ui && npm test` — **68 passed**.
+- UI: `cd ui && npm run build` — passed.
+- UI: `cd ui && npx tsc --noEmit` — passed after the build. An earlier TypeScript run raced the build while `.next/types` was being regenerated; it was not a code failure.
+- `git diff --check` — passed.
+- `.venv/bin/python scripts/connect_calendar.py --help` — passed. Actual OAuth has **not** been run.
+
+## Remaining work
+
+1. Review the uncommitted diff, especially the migration, room enablement, booking approval, and OAuth helper. Adjust if the user clarifies that D-153 should remain available despite the general-classroom deferral.
+2. Obtain a **Desktop app** Google OAuth client JSON from the team's Google Cloud project, with Calendar API enabled and consent configured for `smartassist.csis@gmail.com`. A downloaded OAuth JSON exists in `~/Downloads`, but inspection showed it is a **web** client configured only for a Supabase callback, so it does not work with the local Desktop OAuth helper. Do not expose or commit client secrets. Google setup reference: https://developers.google.com/workspace/calendar/api/quickstart/python.
+3. Run the helper with the Desktop client JSON and have the account owner complete the browser sign-in/consent. Do not request passwords or tokens in chat. Set `GOOGLE_CALENDAR_ID=primary` after verifying the account. The current checkout has no `.env`, `api/.env`, or `ui/.env.local`.
+4. Obtain the project's Supabase access and apply migration 007 after reviewing it against the actual schema/data. No live database credentials are configured locally.
+5. Test a real conference-room booking request, admin approval, Calendar event/link, and conflicting slot. Confirm wording with the user: an empty calendar is only a record of SmartAssist bookings, not a real timetable. Reconcile any actual room schedule before claiming broader availability.
+6. Commit/push/deploy only as directed by the user. No commit has been made so far.
+
+## Important implementation cautions
+
+- The older migration `004_rooms_table.sql` contains illustrative rooms and calendar IDs. Migration 007 leaves them disabled; do not re-enable without confirming real data.
+- The Calendar refresh token must include Calendar scope; the Gmail sending token cannot be assumed to have it. If an External OAuth app remains in Testing, Google's offline refresh token expires after seven days: https://support.google.com/cloud/answer/15549945?hl=en.
+- The code is prepared but the live calendar integration is **not working yet** because account authorization, the calendar ID, Supabase migration, and end-to-end verification remain outstanding.

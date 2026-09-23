@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # ── Google Drive & Calendar ─────────────────────────────────────────────
     google_drive_folder_id: str = ""
     google_calendar_id: str = ""
+    google_calendar_subject: str = ""  # Workspace user for domain-wide delegation, if used
+    google_calendar_client_id: str = ""
+    google_calendar_client_secret: str = ""
+    google_calendar_refresh_token: str = ""  # User OAuth grant with Calendar scope
+
+    # General classroom hours. Set all three before classroom bookings open.
+    classroom_restricted_days: str = ""  # ISO weekdays, e.g. 1,2,3,4,5
+    classroom_restricted_start: str = ""  # Asia/Kolkata HH:MM
+    classroom_restricted_end: str = ""  # Asia/Kolkata HH:MM
 
     # ── Gmail API (OAuth) ───────────────────────────────────────────────────
     gmail_client_id: str = ""

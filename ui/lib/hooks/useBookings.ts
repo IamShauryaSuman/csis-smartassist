@@ -81,6 +81,8 @@ export function useBookings(userId: string | undefined) {
           start_time: proposal.start_time,
           end_time: proposal.end_time,
           description: proposal.description,
+          acknowledged_use: proposal.acknowledged_use,
+          acknowledged_availability: proposal.acknowledged_availability,
         });
         setBookings((prev) => [booking, ...prev]);
         return booking;
@@ -140,7 +142,7 @@ export function useBookings(userId: string | undefined) {
 
   const updateBookingDetails = useCallback(async (
     bookingId: string,
-    data: { room_id: string; room_name: string; title: string; description?: string; start_time: string; end_time: string; }
+    data: { room_id: string; room_name: string; title: string; description?: string; start_time: string; end_time: string; acknowledged_use?: boolean; acknowledged_availability?: boolean; }
   ) => {
     try {
       const updated = await api.updateBookingDetails(bookingId, data);

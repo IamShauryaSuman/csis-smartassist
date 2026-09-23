@@ -59,6 +59,12 @@
   color: $text-secondary;
 }
 
+.calendarLink {
+  font-size: $text-sm;
+  color: $accent-hover;
+  text-decoration: underline;
+}
+
 .notes {
   margin-top: $space-3;
   padding: $space-3;

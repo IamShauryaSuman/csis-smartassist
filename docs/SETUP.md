@@ -62,7 +62,9 @@ CSIS SmartAssist uses a centralized Google Service Account to interface with Goo
    # On Mac/Linux
    base64 -i path/to/your/service-account.json | pbcopy
    ```
-8. Paste the encoded string into `.env` as `GOOGLE_SERVICE_ACCOUNT_B64`.
+8. Paste the encoded string into `.env` as `GOOGLE_SERVICE_ACCOUNT_JSON_B64`.
+
+For room booking on a shared calendar, follow [CALENDAR_SETUP.md](CALENDAR_SETUP.md).
 
 **Important:** For the Service Account to act on behalf of the department, a Google Workspace Admin must grant it **Domain-Wide Delegation** in the Google Admin Console, specifically enabling scopes for Calendar and Gmail read/write access.
 

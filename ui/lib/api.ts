@@ -194,6 +194,8 @@ class APIClient {
     description?: string;
     start_time: string;
     end_time: string;
+    acknowledged_use?: boolean;
+    acknowledged_availability?: boolean;
   }): Promise<Booking> {
     return this.request<Booking>("/bookings", {
       method: "POST",
@@ -233,6 +235,8 @@ class APIClient {
       description?: string;
       start_time: string;
       end_time: string;
+      acknowledged_use?: boolean;
+      acknowledged_availability?: boolean;
     }
   ): Promise<Booking> {
     return this.request<Booking>(`/bookings/${bookingId}`, {

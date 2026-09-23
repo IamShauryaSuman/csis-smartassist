@@ -51,6 +51,10 @@ export interface Booking {
   end_time: string;
   status: "pending" | "approved" | "rejected" | "expired";
   admin_notes: string | null;
+  acknowledged_use?: boolean;
+  acknowledged_availability?: boolean;
+  calendar_event_id?: string | null;
+  calendar_event_link?: string | null;
   is_locked?: boolean;
   locked_by?: string | null;
   locked_at?: string | null;
@@ -117,9 +121,10 @@ export interface Room {
   id: string;
   name: string;
   type: string;
-  capacity: number;
+  capacity: number | null;
   hardware: string[];
-  calendar_id: string;
+  calendar_id: string | null;
+  is_general_classroom?: boolean;
   description: string;
 }
 
@@ -130,6 +135,8 @@ export interface BookingProposalPayload {
   start_time: string;
   end_time: string;
   description?: string;
+  acknowledged_use?: boolean;
+  acknowledged_availability?: boolean;
 }
 
 // ── Onboarding Types ───────────────────────────────────────────────────────
