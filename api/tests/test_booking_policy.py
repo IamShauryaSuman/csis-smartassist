@@ -38,9 +38,20 @@ def test_special_room_ignores_classroom_hours():
     validate_classroom_hours({"is_general_classroom": False}, start, end)
 
 
-def test_unconfigured_classroom_policy_fails_closed():
+def test_unconfigured_classroom_policy_allows_any_time():
     settings = SimpleNamespace(
         classroom_restricted_days="",
+        classroom_restricted_start="",
+        classroom_restricted_end="",
+    )
+    start, end = parse_booking_times("2026-10-01T10:00:00+05:30", "2026-10-01T11:00:00+05:30")
+    with patch("core.booking_policy.get_settings", return_value=settings):
+        validate_classroom_hours({"is_general_classroom": True}, start, end)
+
+
+def test_partially_configured_classroom_policy_fails_closed():
+    settings = SimpleNamespace(
+        classroom_restricted_days="1,2,3,4,5",
         classroom_restricted_start="",
         classroom_restricted_end="",
     )

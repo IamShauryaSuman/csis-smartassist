@@ -14,10 +14,10 @@ The user asked for the calendar portion of CSIS SmartAssist to be implemented. T
 
 - One shared calendar for room bookings.
 - The account calendar currently has no room schedule; it can be used to build a booking schedule. Do **not** invent an academic timetable or claim that an empty calendar proves physical availability.
-- Ignore general classrooms for now. Current code interprets this as enabling only the **CSIS Conference Room**. D-153 is staged but disabled because it is a general classroom. Confirm this interpretation if the user clarifies otherwise.
+- 2026-09-28: user confirmed D-153 stays bookable alongside the **CSIS Conference Room**. Migration 007 now enables both. D-153 is a general classroom; user wants it bookable at any time for now, so `CLASSROOM_RESTRICTED_*` stays unset (unset now means no restriction; partial config still fails closed). User confirmed DLT-8 stays unbookable.
 - Defer recurring bookings. The semester-end date is irrelevant in this phase.
 - Academic/study-use and availability acknowledgements are wanted.
-- The user agreed to authorize access to the shared Google account, but no usable Calendar OAuth credentials or live sign-in have been supplied yet.
+- Calendar access works through the shared service account (see Remaining work 2).
 
 ## Implemented locally
 
@@ -52,9 +52,9 @@ Reviewed the migration, room enablement, booking approval, calendar service, and
 
 ## Remaining work
 
-1. If the user clarifies that D-153 should remain available despite the general-classroom deferral, enable it and configure `CLASSROOM_RESTRICTED_*`.
-2. Obtain a **Desktop app** Google OAuth client JSON from the team's Google Cloud project, with Calendar API enabled and consent configured for `smartassist.csis@gmail.com`. A downloaded OAuth JSON exists in `~/Downloads`, but inspection showed it is a **web** client configured only for a Supabase callback, so it does not work with the local Desktop OAuth helper. Do not expose or commit client secrets. Google setup reference: https://developers.google.com/workspace/calendar/api/quickstart/python.
-3. Run the helper with the Desktop client JSON and have the account owner complete the browser sign-in/consent. Do not request passwords or tokens in chat. Set `GOOGLE_CALENDAR_ID=primary` after verifying the account. The checkout has no `.env`, `api/.env`, or `ui/.env.local`.
+1. If college hours are later required for D-153, set all three `CLASSROOM_RESTRICTED_*` values.
+2. Done 2026-09-28: Calendar access uses the existing service account `drive-and-calendar-bot@csis-smartassist-502216.iam.gserviceaccount.com` instead of Desktop OAuth. The `smartassist.csis@gmail.com` calendar is shared with it ("Make changes to events"). Local `.env` has `GOOGLE_CALENDAR_ID=smartassist.csis@gmail.com` (not `primary`, which would mean the service account's own calendar). Verified read, FreeBusy, event insert and delete. The service account cannot invite attendees; the code already skips attendees in this mode. The deployed API also needs `GOOGLE_CALENDAR_ID` set.
+3. (Superseded by 2.)
 4. Obtain the project's Supabase access and apply migration 007 after reviewing it against the actual schema/data. No live database credentials are configured locally.
 5. Test a real conference-room booking request, admin approval, Calendar event/link, and conflicting slot. Confirm wording with the user: an empty calendar is only a record of SmartAssist bookings, not a real timetable. Reconcile any actual room schedule before claiming broader availability.
 6. Merge to `main` and deploy only as directed by the user, and only after step 4.

@@ -32,7 +32,10 @@ def parse_booking_times(start_value: str, end_value: str) -> tuple[datetime, dat
 
 
 def validate_classroom_hours(room: dict, start: datetime, end: datetime) -> None:
-    """Reject any overlap with configured college hours for general classrooms."""
+    """Reject any overlap with configured college hours for general classrooms.
+
+    With no hours configured, general classrooms are bookable at any time.
+    """
     if not room.get("is_general_classroom"):
         return
 
@@ -42,8 +45,10 @@ def validate_classroom_hours(room: dict, start: datetime, end: datetime) -> None
         settings.classroom_restricted_start,
         settings.classroom_restricted_end,
     )
+    if not any(values):
+        return
     if not all(values):
-        raise BookingPolicyNotConfigured("General classroom booking hours are not configured.")
+        raise BookingPolicyNotConfigured("General classroom booking hours are partially configured.")
     try:
         weekdays = {int(day.strip()) for day in values[0].split(",")}
         blocked_start = time.fromisoformat(values[1])

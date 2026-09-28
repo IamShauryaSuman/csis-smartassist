@@ -118,7 +118,7 @@ async def test_query_freebusy_marks_calendar_errors_unknown(mock_build):
 async def test_query_freebusy_marks_unconfigured_room_unknown():
     with patch("services.calendar.get_all_rooms", return_value=[
         {"id": "room_1", "name": "Room 1", "calendar_id": None}
-    ]):
+    ]), patch("core.rooms.get_settings", return_value=MagicMock(google_calendar_id="")):
         assert await query_freebusy(room_ids=["room_1"]) == {"room_1": None}
 
 
