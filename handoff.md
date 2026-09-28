@@ -55,12 +55,12 @@ Reviewed the migration, room enablement, booking approval, calendar service, and
 1. If college hours are later required for D-153, set all three `CLASSROOM_RESTRICTED_*` values.
 2. Done 2026-09-28: Calendar access uses the existing service account `drive-and-calendar-bot@csis-smartassist-502216.iam.gserviceaccount.com` instead of Desktop OAuth. The `smartassist.csis@gmail.com` calendar is shared with it ("Make changes to events"). Local `.env` has `GOOGLE_CALENDAR_ID=smartassist.csis@gmail.com` (not `primary`, which would mean the service account's own calendar). Verified read, FreeBusy, event insert and delete. The service account cannot invite attendees; the code already skips attendees in this mode. The deployed API also needs `GOOGLE_CALENDAR_ID` set.
 3. (Superseded by 2.)
-4. Obtain the project's Supabase access and apply migration 007 after reviewing it against the actual schema/data. No live database credentials are configured locally.
-5. Test a real conference-room booking request, admin approval, Calendar event/link, and conflicting slot. Confirm wording with the user: an empty calendar is only a record of SmartAssist bookings, not a real timetable. Reconcile any actual room schedule before claiming broader availability.
-6. Merge to `main` and deploy only as directed by the user, and only after step 4.
+4. Done 2026-09-28: the user applied migration 007 in the Supabase SQL editor. Verified via REST: only `csis_conference_room` and `d_153` have `booking_enabled = true` (DLT-8 and the 004 rooms are disabled); booking acknowledgement and calendar event columns exist. No pending bookings existed at the time.
+5. Done 2026-09-28: live end-to-end check by calling the route handlers in-process (auth and emails stubbed): conference-room request → pending; admin approval → event on `smartassist.csis@gmail.com` with room/booking private metadata and a stored link; overlapping conference-room request → 409; D-153 at the same slot → pending (shared calendar keeps rooms separate). All test rows and the event were deleted afterwards. Not yet exercised through the deployed UI.
+6. Merge to `main` and deploy only as directed by the user. Set `GOOGLE_CALENDAR_ID=smartassist.csis@gmail.com` on the API host first. Until the new API is deployed, the currently deployed API does not read `booking_enabled` and may still offer the disabled rooms.
 
 ## Important implementation cautions
 
 - The older migration `004_rooms_table.sql` contains illustrative rooms and calendar IDs. Migration 007 leaves them disabled; do not re-enable without confirming real data.
 - The Calendar refresh token must include Calendar scope; the Gmail sending token cannot be assumed to have it. If an External OAuth app remains in Testing, Google's offline refresh token expires after seven days: https://support.google.com/cloud/answer/15549945?hl=en.
-- The code is prepared but the live calendar integration is **not working yet** because account authorization, the calendar ID, Supabase migration, and end-to-end verification remain outstanding.
+- Calendar access, the migration, and a local end-to-end check are done. Remaining: deploy with `GOOGLE_CALENDAR_ID` set, then retest through the live UI.
