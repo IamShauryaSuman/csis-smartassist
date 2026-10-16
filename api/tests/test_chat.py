@@ -191,3 +191,46 @@ def test_update_session(client, chat_mock_supabase):
         
     assert response.status_code == 200
     assert response.json()["title"] == "Updated Title"
+
+
+@pytest.mark.asyncio
+async def test_finalize_chat_response_json_title(chat_mock_supabase):
+    from routes.chat import _finalize_chat_response
+    mock_llm = MagicMock()
+    mock_llm.generate_title = AsyncMock(return_value='{"title": "Machine Learning Prerequisites"}')
+
+    with patch("routes.chat.get_hybrid_client", return_value=mock_llm), \
+         patch("routes.chat._synthesize_memory_task", return_value=None):
+        await _finalize_chat_response(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            session_title="New Chat",
+            user_message="Tell me about CS F429",
+            assistant_content="CS F429 is Machine Learning.",
+            interactive_type=None,
+            interactive_payload=None,
+        )
+
+    chat_mock_supabase.table().update.assert_any_call({"title": "Machine Learning Prerequisites"})
+
+
+@pytest.mark.asyncio
+async def test_finalize_chat_response_fallback_on_empty(chat_mock_supabase):
+    from routes.chat import _finalize_chat_response
+    mock_llm = MagicMock()
+    mock_llm.generate_title = AsyncMock(return_value="")
+
+    with patch("routes.chat.get_hybrid_client", return_value=mock_llm), \
+         patch("routes.chat._synthesize_memory_task", return_value=None):
+        await _finalize_chat_response(
+            user_id=USER_ID,
+            session_id=SESSION_ID,
+            session_title="New Chat Session",
+            user_message="What are the prerequisites for ML?",
+            assistant_content="Probability and Linear Algebra.",
+            interactive_type=None,
+            interactive_payload=None,
+        )
+
+    chat_mock_supabase.table().update.assert_any_call({"title": "What are the prerequisites for ML?"})
+

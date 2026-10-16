@@ -274,47 +274,66 @@ async def _finalize_chat_response(
 
         # ── Auto-generate session title from first message ──────────────────────
         generated_title = None
-        if session_title == "New Chat" or session_title == "New Chat Session":
-            title_prompt = TITLE_GENERATION_PROMPT.format(
-                user_message=user_message,
-                assistant_response=assistant_content
-            )
+        if session_title in ("New Chat", "New Chat Session"):
+            title = ""
             try:
-                # Use OpenRouter via hybrid client for title generation
-                title_data_str = await llm.generate_title(title_prompt)
+                title_prompt = TITLE_GENERATION_PROMPT.format(
+                    user_message=user_message,
+                    assistant_response=assistant_content[:1000]
+                )
+                title_data_str = await asyncio.wait_for(
+                    llm.generate_title(title_prompt),
+                    timeout=8.0
+                )
                 
-                # Title might be returned directly or wrapped in json. We'll strip quotes if needed.
-                # If they used JSON format in previous implementation, we should safely parse it.
-                title = title_data_str.strip(' \n\r\t\"\'')
-                
-                # Handle potential markdown json blocks
+                raw = title_data_str.strip()
+                # 1. Check for markdown json code fence
                 import re
-                json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", title)
+                json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
                 if json_match:
-                    title = json_match.group(1).strip()
+                    raw = json_match.group(1).strip()
 
-                if title.startswith("{") and "title" in title.lower():
+                # 2. Extract title field via regex
+                title_match = re.search(r'"title"\s*:\s*"([^"]+)"', raw)
+                if title_match:
+                    title = title_match.group(1).strip()
+                elif raw.startswith("{"):
                     try:
-                        title = json.loads(title).get("title", title)
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict) and "title" in parsed:
+                            title = str(parsed["title"]).strip()
                     except json.JSONDecodeError:
                         pass
-                        
-                if len(title) > 40:
-                    title = title[:37] + "..."
+
+                # 3. If raw wasn't JSON, use the raw text if clean
+                if not title and raw and not raw.startswith("{"):
+                    cleaned = raw.strip(' \n\r\t"\'`#*')
+                    if cleaned and len(cleaned) < 60:
+                        title = cleaned
             except Exception as e:
-                logger.error("Error generating title: %s", e)
-                # Fallback to simple truncation
-                title = user_message.strip()
-                if len(title) > 40:
-                    title = title[:37] + "..."
-            
-            if not title:
-                title = "New Chat Session"
-                
-            await asyncio.to_thread(lambda: db.table("chat_sessions").update({"title": title}).eq(
-                "id", session_id
-            ).execute())
-            generated_title = title
+                logger.warning("Error generating title from LLM: %s. Using fallback title.", e)
+
+            # Fallback: derive title from user message if LLM returned empty or default
+            if not title or title in ("New Chat", "New Chat Session"):
+                import re
+                first_line = user_message.strip().split("\n")[0].strip()
+                first_line = re.sub(r'^[#*>\-\d\.\s]+', '', first_line).strip(' "\'()[]{}')
+                if first_line:
+                    title = first_line[:35].strip()
+                else:
+                    title = "Chat Session"
+
+            if len(title) > 40:
+                title = title[:37] + "..."
+
+            try:
+                await asyncio.to_thread(lambda: db.table("chat_sessions").update({"title": title}).eq(
+                    "id", session_id
+                ).execute())
+                generated_title = title
+                logger.info("Updated chat session %s title to: %s", session_id, title)
+            except Exception as e:
+                logger.error("Failed to update session title in db: %s", e)
 
         # ── Update session timestamp ────────────────────────────────────────────
         await asyncio.to_thread(lambda: db.table("chat_sessions").update(

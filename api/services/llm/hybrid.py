@@ -192,11 +192,11 @@ class HybridLLMClient(BaseLLMClient):
     async def generate_title(self, prompt: str) -> str:
         """Title Generation: Ollama (if configured) else Groq -> OpenRouter -> Gemini"""
         if self.llm_provider == "ollama" and self.ollama_llm:
-            return await self.ollama_llm.generate(prompt, temperature=0.3, max_tokens=50)
+            return await self.ollama_llm.generate(prompt, temperature=0.3, max_tokens=300)
 
         chain = [self.groq, self.openrouter, self.gemini]
         return await self._execute_with_fallback(
-            "generate", chain, prompt, temperature=0.3, max_tokens=50
+            "generate", chain, prompt, temperature=0.3, max_tokens=300
         )
 
     async def generate_memory(self, prompt: str) -> str:

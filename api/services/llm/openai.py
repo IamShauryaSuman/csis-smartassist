@@ -101,6 +101,21 @@ class OpenAICompatibleClient(BaseLLMClient):
             or ("404" in err_lower and "model" in err_lower)
         )
 
+    def _extract_message_content(self, message: Any) -> str:
+        """Extract content from a chat completion message, checking reasoning if content is empty."""
+        content = (getattr(message, "content", None) or "").strip()
+        if content:
+            return content
+        reasoning = getattr(message, "reasoning", "") or getattr(message, "reasoning_content", "") or ""
+        if not reasoning and hasattr(message, "model_extra") and isinstance(message.model_extra, dict):
+            reasoning = message.model_extra.get("reasoning", "") or message.model_extra.get("reasoning_content", "")
+        if reasoning:
+            reasoning_str = str(reasoning).strip()
+            json_match = re.search(r'\{[^{}]*"title"[^{}]*\}', reasoning_str)
+            if json_match:
+                return json_match.group(0)
+        return ""
+
     async def generate(
         self,
         prompt: str,
@@ -124,7 +139,7 @@ class OpenAICompatibleClient(BaseLLMClient):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            return response.choices[0].message.content or ""
+            return self._extract_message_content(response.choices[0].message)
         except Exception as e:
             if self._is_model_error(str(e)):
                 logger.warning("Model '%s' failed with model error (%s). Re-discovering active model...", model, e)
@@ -137,8 +152,9 @@ class OpenAICompatibleClient(BaseLLMClient):
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
-                    return response.choices[0].message.content or ""
+                    return self._extract_message_content(response.choices[0].message)
             raise
+
 
     async def generate_stream(
         self,
