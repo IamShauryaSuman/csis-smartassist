@@ -82,9 +82,9 @@ class Settings(BaseSettings):
 
     # ── Alternate LLM Providers ─────────────────────────────────────────────
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = ""  # Optional override: if empty, dynamically discovered from active provider models
     openrouter_api_key: str = ""
-    openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    openrouter_model: str = ""  # Optional override: if empty, dynamically discovered from active provider models
 
     # ── AI Provider Toggles ─────────────────────────────────────────────────
     llm_provider: str = "gemini"  # Options: gemini, ollama

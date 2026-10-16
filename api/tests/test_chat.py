@@ -77,6 +77,38 @@ def test_chat_send_general_query(client, chat_mock_supabase, mock_gemini):
     assert '"text": "World"' in text
     assert '"type": "done"' in text
 
+def test_chat_send_department_query_embedding_failure_fallback(client, chat_mock_supabase, mock_gemini):
+    """Test that if embed_query fails (e.g. 403 Permission Denied), the stream still succeeds gracefully."""
+    chat_mock_supabase.table().select().eq().single().execute.side_effect = [
+        MagicMock(data={"id": SESSION_ID, "user_id": USER_ID}),
+        MagicMock(data={"full_name": "Test User"}),
+        MagicMock(data=[]),
+    ]
+
+    mock_gemini.generate_json = AsyncMock(return_value={"intent": "department_query", "confidence": 0.95})
+    mock_gemini.embed_query = AsyncMock(side_effect=Exception("403 PermissionDenied: Your project has been denied access."))
+    mock_gemini.generate = AsyncMock(return_value="department query")
+
+    async def mock_stream(*args, **kwargs):
+        yield "Fallback "
+        yield "Answer"
+
+    mock_gemini.generate_stream = mock_stream
+    mock_gemini.generate_title = AsyncMock(return_value="Test Title")
+
+    with patch("routes.chat.get_hybrid_client", return_value=mock_gemini), patch("routes.chat._extract_user_id", return_value=USER_ID):
+        response = client.post("/api/chat/send", json={
+            "session_id": SESSION_ID,
+            "message": "Tell me about CS department"
+        }, headers={"Authorization": "Bearer token"})
+
+    assert response.status_code == 200
+    text = response.text
+    assert '"intent": "department_query"' in text
+    assert '"text": "Fallback "' in text
+    assert '"text": "Answer"' in text
+    assert '"type": "done"' in text
+
 def test_chat_send_calendar_query(client, chat_mock_supabase, mock_gemini):
     # Mock parallel DB queries
     chat_mock_supabase.table().select().eq().single().execute.side_effect = [

@@ -102,3 +102,24 @@ async def test_generate_stream_fallback(hybrid_client, mock_gemini, mock_groq):
         chunks.append(chunk)
         
     assert chunks == ["Chunk 1", "Chunk 2"]
+
+@pytest.mark.asyncio
+async def test_generate_fallback_permission_denied(hybrid_client, mock_gemini, mock_groq):
+    """Test that generate() falls back to Groq when Gemini returns 403 Permission Denied."""
+    mock_gemini.generate.side_effect = Exception("403 Your project has been denied access.")
+    mock_groq.generate.return_value = "Groq response"
+
+    response = await hybrid_client.generate("Test prompt")
+    assert response == "Groq response"
+    mock_gemini.generate.assert_called_once()
+    mock_groq.generate.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_generate_title_primary_groq(hybrid_client, mock_groq, mock_gemini):
+    """Test that generate_title() prioritizes Groq."""
+    mock_groq.generate.return_value = "Chat Title"
+
+    response = await hybrid_client.generate_title("Test prompt")
+    assert response == "Chat Title"
+    mock_groq.generate.assert_called_once()
+    mock_gemini.generate.assert_not_called()

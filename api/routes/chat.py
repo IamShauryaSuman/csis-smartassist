@@ -515,6 +515,10 @@ async def send_message(
                 clean_msg = "Google Gemini Free Tier limit reached (5 requests/minute). Please wait about 60 seconds and try again!"
                 logger.warning("LLM Quota Exceeded during stream.")
                 yield f"data: {json.dumps({'type': 'error', 'detail': clean_msg})}\n\n"
+            elif "403" in err_msg or "denied access" in err_msg.lower():
+                clean_msg = "AI provider permission denied (403). Please verify API key permissions."
+                logger.error("LLM Permission Denied during stream.")
+                yield f"data: {json.dumps({'type': 'error', 'detail': clean_msg})}\n\n"
             else:
                 logger.error("Error during streaming generation", exc_info=True)
                 yield f"data: {json.dumps({'type': 'error', 'detail': err_msg})}\n\n"
@@ -627,6 +631,70 @@ async def _condense_query_for_rag(
     return user_message
 
 
+async def _retrieve_rag_chunks(
+    llm: Any,
+    db: Any,
+    search_query: str,
+    user_message: str,
+) -> list[dict]:
+    """Retrieve relevant chunks using vector search, with keyword fallback and graceful degradation."""
+    chunks = []
+    try:
+        query_embedding = await llm.embed_query(search_query)
+        match_result = db.rpc(
+            "match_chunks",
+            {
+                "query_embedding": query_embedding,
+                "match_threshold": 0.35,
+                "match_count": 8,
+            },
+        ).execute()
+        chunks = match_result.data or []
+
+        # If the rewritten query returned few results and differs from the user message, also query with user_message
+        if search_query != user_message and len(chunks) < 3:
+            try:
+                raw_embedding = await llm.embed_query(user_message)
+                raw_matches = db.rpc(
+                    "match_chunks",
+                    {
+                        "query_embedding": raw_embedding,
+                        "match_threshold": 0.35,
+                        "match_count": 4,
+                    },
+                ).execute()
+                seen_ids = {c["id"] for c in chunks}
+                for c in (raw_matches.data or []):
+                    if c["id"] not in seen_ids:
+                        chunks.append(c)
+                        seen_ids.add(c["id"])
+            except Exception as e:
+                logger.warning("Secondary RAG vector query failed: %s", e)
+    except Exception as e:
+        logger.warning("Primary RAG vector retrieval failed (%s). Attempting keyword fallback.", e)
+        try:
+            # Fall back to keyword ILIKE search in rag_chunks
+            stopwords = {"what", "when", "where", "which", "who", "whom", "this", "that", "there", "about", "tell", "give", "know", "does", "have"}
+            keywords = [w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", search_query) if w.lower() not in stopwords]
+            if keywords:
+                term = keywords[0]
+                kw_matches = db.table("rag_chunks").select("id, file_id, content, rag_files(name)").ilike("content", f"%{term}%").limit(5).execute()
+                for row in (kw_matches.data or []):
+                    file_info = row.get("rag_files") or {}
+                    file_name = file_info.get("name") if isinstance(file_info, dict) else "Document"
+                    chunks.append({
+                        "id": row.get("id"),
+                        "file_id": row.get("file_id"),
+                        "file_name": file_name,
+                        "content": row.get("content", ""),
+                        "similarity": 0.5,
+                    })
+        except Exception as kw_e:
+            logger.warning("Keyword RAG fallback failed: %s", kw_e)
+
+    return chunks
+
+
 async def _handle_department_query(
     llm: Any,
     user_message: str,
@@ -638,41 +706,7 @@ async def _handle_department_query(
 
     # Rewrite follow-up question into a standalone search query
     search_query = await _condense_query_for_rag(llm, user_message, conversation_context)
-
-    # Generate query embedding
-    query_embedding = await llm.embed_query(search_query)
-
-    # Retrieve relevant chunks via pgvector similarity search
-    match_result = db.rpc(
-        "match_chunks",
-        {
-            "query_embedding": query_embedding,
-            "match_threshold": 0.35,
-            "match_count": 8,
-        },
-    ).execute()
-
-    chunks = match_result.data or []
-
-    # If the rewritten query returned few results and differs from the user message, also query with user_message
-    if search_query != user_message and len(chunks) < 3:
-        try:
-            raw_embedding = await llm.embed_query(user_message)
-            raw_matches = db.rpc(
-                "match_chunks",
-                {
-                    "query_embedding": raw_embedding,
-                    "match_threshold": 0.35,
-                    "match_count": 4,
-                },
-            ).execute()
-            seen_ids = {c["id"] for c in chunks}
-            for c in (raw_matches.data or []):
-                if c["id"] not in seen_ids:
-                    chunks.append(c)
-                    seen_ids.add(c["id"])
-        except Exception:
-            pass
+    chunks = await _retrieve_rag_chunks(llm, db, search_query, user_message)
 
     # Build RAG context
     if chunks:
@@ -703,38 +737,7 @@ async def _handle_department_query_stream(
 
     # Rewrite follow-up question into a standalone search query
     search_query = await _condense_query_for_rag(llm, user_message, conversation_context)
-
-    query_embedding = await llm.embed_query(search_query)
-    match_result = db.rpc(
-        "match_chunks",
-        {
-            "query_embedding": query_embedding,
-            "match_threshold": 0.35,
-            "match_count": 8,
-        },
-    ).execute()
-
-    chunks = match_result.data or []
-
-    # If the rewritten query returned few results and differs from the user message, also query with user_message
-    if search_query != user_message and len(chunks) < 3:
-        try:
-            raw_embedding = await llm.embed_query(user_message)
-            raw_matches = db.rpc(
-                "match_chunks",
-                {
-                    "query_embedding": raw_embedding,
-                    "match_threshold": 0.35,
-                    "match_count": 4,
-                },
-            ).execute()
-            seen_ids = {c["id"] for c in chunks}
-            for c in (raw_matches.data or []):
-                if c["id"] not in seen_ids:
-                    chunks.append(c)
-                    seen_ids.add(c["id"])
-        except Exception:
-            pass
+    chunks = await _retrieve_rag_chunks(llm, db, search_query, user_message)
 
     if chunks:
         rag_context = "\n\n---\n\n".join(

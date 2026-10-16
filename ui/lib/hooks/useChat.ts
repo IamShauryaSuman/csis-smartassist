@@ -65,12 +65,13 @@ export function useChat(sessionId: string | null) {
       setMessages((prev) => [...prev, optimisticUserMsg]);
       setSending(true);
 
-      let assistantMsgId = `tmp-asst-${Date.now()}`;
+      const placeholderAssistantId = `tmp-asst-${Date.now()}`;
+      let assistantMsgId = placeholderAssistantId;
       try {
         
         // Add an empty assistant message to be filled
         const emptyAssistantMsg: Message = {
-          id: assistantMsgId,
+          id: placeholderAssistantId,
           session_id: targetSessionId,
           role: "assistant",
           content: "",
@@ -159,7 +160,7 @@ export function useChat(sessionId: string | null) {
         
         // Remove the empty assistant placeholder bubble on failure
         setMessages((prev) => {
-          const filtered = prev.filter((m) => m.id !== assistantMsgId);
+          const filtered = prev.filter((m) => m.id !== assistantMsgId && m.id !== placeholderAssistantId);
           return [
             ...filtered,
             {

@@ -143,19 +143,23 @@ class APIClient {
             const dataStr = block.substring(6).trim();
             if (!dataStr) continue;
             
+            let data: any;
             try {
-              const data = JSON.parse(dataStr);
-              if (data.type === "metadata") {
-                onMetadata(data);
-              } else if (data.type === "chunk") {
-                onChunk(data.text);
-              } else if (data.type === "error") {
-                onError(new Error(data.detail));
-              } else if (data.type === "done") {
-                // Finished stream
-              }
+              data = JSON.parse(dataStr);
             } catch (e) {
               console.error("Failed to parse SSE JSON:", e, "Data string:", dataStr);
+              continue;
+            }
+
+            if (data.type === "metadata") {
+              onMetadata(data);
+            } else if (data.type === "chunk") {
+              onChunk(data.text);
+            } else if (data.type === "error") {
+              onError(new Error(data.detail));
+              return;
+            } else if (data.type === "done") {
+              // Finished stream
             }
           }
         }
