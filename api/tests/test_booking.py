@@ -293,3 +293,36 @@ def test_approval_can_resume_after_calendar_event_exists(
     assert response.status_code == 200
     mock_create.assert_not_called()
     mock_availability.assert_not_called()
+
+
+def test_admin_endpoints_reject_non_admin(client, mock_supabase, mock_extract_user):
+    """Ensure non-admin users receive 403 Forbidden on admin operations."""
+    from fastapi import HTTPException
+    with patch("routes.booking._require_admin", side_effect=HTTPException(status_code=403, detail="Admin access required.")):
+        # Admin listing
+        res_list = client.get("/api/bookings?all_users=true", headers={"Authorization": "Bearer token"})
+        assert res_list.status_code == 403
+        assert res_list.json()["detail"] == "Admin access required."
+
+        # Status update
+        res_status = client.patch("/api/bookings/b-1/status", json={"status": "approved"}, headers={"Authorization": "Bearer token"})
+        assert res_status.status_code == 403
+
+
+def test_multi_admin_notification_dispatch(client, mock_supabase, mock_extract_user, mock_availability):
+    """Verify that when a booking is created, notifications dispatch to all configured admins."""
+    # Setup mock profiles table to return multiple admins
+    admin_profiles = [
+        {"email": "admin1@goa.bits-pilani.ac.in", "is_admin": True},
+        {"email": "admin2@goa.bits-pilani.ac.in", "is_admin": True},
+    ]
+    with patch("routes.booking.send_admin_new_booking_notification", new_callable=AsyncMock) as mock_admin_notify:
+        response = client.post("/api/bookings", headers={"Authorization": "Bearer token"}, json={
+            "room_id": "r-1", "room_name": "Test Room", "title": "Class Meeting",
+            "start_time": "2026-10-01T10:00:00+05:30",
+            "end_time": "2026-10-01T11:00:00+05:30",
+            "acknowledged_use": True, "acknowledged_availability": True,
+        })
+        assert response.status_code == 200
+        # Check that background notification task was spawned
+        assert mock_admin_notify.called

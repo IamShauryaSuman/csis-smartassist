@@ -45,12 +45,15 @@ def test_get_sessions(client, chat_mock_supabase):
     assert len(response.json()) == 1
 
 def test_chat_send_general_query(client, chat_mock_supabase, mock_gemini):
-    # Mock parallel DB queries inside _fetch_db_data
+    # Mock DB queries inside _fetch_db_data and subsequent calls
+    s_mock = MagicMock(data={"id": SESSION_ID, "user_id": USER_ID, "title": "New Chat"})
+    p_mock = MagicMock(data={"full_name": "Test User"})
+    h_mock = MagicMock(data=[])
+
     chat_mock_supabase.table().select().eq().single().execute.side_effect = [
-        MagicMock(data={"id": SESSION_ID, "user_id": USER_ID}), # session
-        MagicMock(data={"full_name": "Test User"}), # profile
-        MagicMock(data=[]), # history
+        s_mock, p_mock, MagicMock(data=None), MagicMock(data=None)
     ]
+    chat_mock_supabase.table().select().eq().order().limit().execute.return_value = h_mock
     
     # Mock LLM intent
     mock_gemini.generate_json = AsyncMock(return_value={"intent": "general_query", "confidence": 0.95})
@@ -64,7 +67,9 @@ def test_chat_send_general_query(client, chat_mock_supabase, mock_gemini):
     mock_gemini.generate_title = AsyncMock(return_value="Test Title")
     
     # Mock Hybrid client
-    with patch("routes.chat.get_hybrid_client", return_value=mock_gemini), patch("routes.chat._extract_user_id", return_value=USER_ID):
+    with patch("routes.chat.get_hybrid_client", return_value=mock_gemini), \
+         patch("routes.chat._extract_user_id", return_value=USER_ID), \
+         patch("routes.chat._finalize_chat_response", new_callable=AsyncMock):
         response = client.post("/api/chat/send", json={
             "session_id": SESSION_ID,
             "message": "Hi"
@@ -78,12 +83,15 @@ def test_chat_send_general_query(client, chat_mock_supabase, mock_gemini):
     assert '"type": "done"' in text
 
 def test_chat_send_calendar_query(client, chat_mock_supabase, mock_gemini):
-    # Mock parallel DB queries
+    # Mock DB queries
+    s_mock = MagicMock(data={"id": SESSION_ID, "user_id": USER_ID, "title": "New Chat"})
+    p_mock = MagicMock(data={})
+    h_mock = MagicMock(data=[])
+
     chat_mock_supabase.table().select().eq().single().execute.side_effect = [
-        MagicMock(data={"id": SESSION_ID, "user_id": USER_ID}), # session
-        MagicMock(data={}), # profile
-        MagicMock(data=[]), # history
+        s_mock, p_mock, MagicMock(data=None), MagicMock(data=None)
     ]
+    chat_mock_supabase.table().select().eq().order().limit().execute.return_value = h_mock
     
     mock_gemini.generate_json = AsyncMock(return_value={"intent": "calendar_query"})
     
@@ -95,7 +103,8 @@ def test_chat_send_calendar_query(client, chat_mock_supabase, mock_gemini):
          patch("routes.chat.format_availability_for_llm", new_callable=AsyncMock) as mock_fmt, \
          patch("routes.chat.get_rooms_manifest_text", new_callable=AsyncMock) as mock_manifest, \
          patch("routes.chat.get_hybrid_client", return_value=mock_gemini), \
-         patch("routes.chat._extract_user_id", return_value=USER_ID):
+         patch("routes.chat._extract_user_id", return_value=USER_ID), \
+         patch("routes.chat._finalize_chat_response", new_callable=AsyncMock):
         
         mock_fb.return_value = {}
         mock_fmt.return_value = ""

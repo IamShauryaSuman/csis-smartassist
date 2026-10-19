@@ -1,0 +1,235 @@
+"""
+Ollama LLM integration for fully local inference.
+
+Concrete implementation of BaseLLMClient that communicates with an Ollama
+server over its REST API using httpx.  No external SDK required — just HTTP.
+
+Supports text generation, streaming, JSON-mode output, and embeddings via
+locally-hosted models (e.g. Llama 3, Mistral Nemo, bge-m3).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from functools import lru_cache
+from typing import Any
+
+import httpx
+
+from core.config import get_settings
+from services.llm.base import BaseLLMClient
+
+logger = logging.getLogger(__name__)
+
+# Generous timeout for local GPU model generation (300s read timeout)
+_DEFAULT_TIMEOUT = httpx.Timeout(connect=15.0, read=300.0, write=300.0, pool=30.0)
+
+
+class OllamaClient(BaseLLMClient):
+    """LLM client backed by a local Ollama instance."""
+
+    def __init__(self) -> None:
+        settings = get_settings()
+        self._base_url = settings.ollama_base_url.rstrip("/")
+        self._model = settings.ollama_model
+        self._fast_model = settings.ollama_fast_model
+        self._embedding_model = settings.ollama_embedding_model
+        self._embedding_dim = settings.embedding_dimension
+
+    # ── Helpers ─────────────────────────────────────────────────────────────
+
+    def _pick_model(self, fast: bool) -> str:
+        return self._fast_model if fast else self._model
+
+    def _chat_url(self) -> str:
+        return f"{self._base_url}/api/chat"
+
+    def _embed_url(self) -> str:
+        return f"{self._base_url}/api/embed"
+
+    def _create_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT, http2=False)
+
+    @staticmethod
+    def _build_messages(prompt: str, system_prompt: str) -> list[dict[str, str]]:
+        msgs: list[dict[str, str]] = []
+        if system_prompt:
+            msgs.append({"role": "system", "content": system_prompt})
+        msgs.append({"role": "user", "content": prompt})
+        return msgs
+
+    # ── Text Generation ────────────────────────────────────────────────────
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        fast_model: bool = False,
+    ) -> str:
+        """Generate a text completion via Ollama (non-streaming) with automatic retry on connection drops."""
+        payload = {
+            "model": self._pick_model(fast_model),
+            "messages": self._build_messages(prompt, system_prompt),
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        last_error = None
+        for attempt in range(2):
+            try:
+                async with self._create_client() as client:
+                    resp = await client.post(self._chat_url(), json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    content = data.get("message", {}).get("content", "")
+                    if not content:
+                        logger.warning("Ollama returned empty content for prompt: %s", prompt[:100])
+                        return "I'm sorry, I couldn't generate a response. Please try rephrasing your question."
+                    return content
+            except (httpx.RemoteProtocolError, httpx.TransportError, httpx.HTTPStatusError) as e:
+                last_error = e
+                logger.warning("Ollama generate attempt %d failed: %s. Retrying...", attempt + 1, e)
+                if attempt == 1:
+                    raise e
+
+        raise last_error or Exception("Ollama generate failed")
+
+    # ── Streaming Generation ───────────────────────────────────────────────
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+        fast_model: bool = False,
+    ):
+        """Generate a text completion as an async stream of chunks with automatic retry on connection drops."""
+        payload = {
+            "model": self._pick_model(fast_model),
+            "messages": self._build_messages(prompt, system_prompt),
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+
+        for attempt in range(2):
+            try:
+                async with self._create_client() as client:
+                    async with client.stream("POST", self._chat_url(), json=payload) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line.strip():
+                                continue
+                            try:
+                                chunk = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            text = chunk.get("message", {}).get("content", "")
+                            if text:
+                                yield text
+                        return  # Successfully finished streaming
+            except asyncio.CancelledError:
+                logger.info("Ollama stream generation cancelled by client.")
+                raise
+            except GeneratorExit:
+                logger.info("Ollama stream generation closed by client.")
+                return
+            except (httpx.RemoteProtocolError, httpx.TransportError) as e:
+                logger.warning("Ollama stream attempt %d disconnected: %s. Retrying...", attempt + 1, e)
+                if attempt == 1:
+                    raise e
+
+    # ── Embeddings ─────────────────────────────────────────────────────────
+
+    async def embed(self, text: str) -> list[float]:
+        """Generate an embedding vector using the local embedding model."""
+        if "nomic-embed-text" in self._embedding_model.lower() and not text.startswith(
+            ("search_document:", "search_query:")
+        ):
+            text = f"search_document: {text}"
+
+        payload = {
+            "model": self._embedding_model,
+            "input": text,
+        }
+
+        for attempt in range(2):
+            try:
+                async with self._create_client() as client:
+                    resp = await client.post(self._embed_url(), json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    embeddings = data.get("embeddings", [])
+                    if not embeddings:
+                        raise ValueError("Ollama returned no embeddings.")
+                    vector = embeddings[0]
+                    return vector[: self._embedding_dim]
+            except (httpx.RemoteProtocolError, httpx.TransportError) as e:
+                logger.warning("Ollama embed attempt %d failed: %s. Retrying...", attempt + 1, e)
+                if attempt == 1:
+                    raise e
+        raise ValueError("Failed to obtain embeddings from Ollama.")
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Generate a query embedding (with nomic-specific query prefix if needed)."""
+        if "nomic-embed-text" in self._embedding_model.lower() and not text.startswith("search_query:"):
+            text = f"search_query: {text}"
+        return await self.embed(text)
+
+    # ── JSON Generation ────────────────────────────────────────────────────
+
+    async def generate_json(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str = "",
+        temperature: float = 0.1,
+        fast_model: bool = False,
+    ) -> dict[str, Any]:
+        """Generate a structured JSON response using Ollama's native JSON mode."""
+        payload = {
+            "model": self._pick_model(fast_model),
+            "messages": self._build_messages(prompt, system_prompt),
+            "stream": False,
+            "format": "json",
+            "options": {
+                "temperature": temperature,
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            resp = await client.post(self._chat_url(), json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        raw_text = data.get("message", {}).get("content", "").strip()
+
+        # Handle markdown fences if the model still wraps output
+        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_text)
+        if json_match:
+            raw_text = json_match.group(1).strip()
+
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError:
+            logger.error("Failed to parse Ollama JSON response: %s", raw_text[:200])
+            return {"error": "Failed to parse response", "raw": raw_text}
+
+
+@lru_cache(maxsize=1)
+def get_ollama_client() -> OllamaClient:
+    """Singleton accessor for the Ollama client."""
+    return OllamaClient()
