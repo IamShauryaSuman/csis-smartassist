@@ -19,6 +19,7 @@ export default function AuthCallback() {
     const hash = window.location.hash;
     
     if (!hash) {
+      setGlobalLoading(false);
       setError("No authentication data found.");
       return;
     }
@@ -55,7 +56,7 @@ export default function AuthCallback() {
         setError("Invalid authentication response.");
       }
     }
-  }, [signInWithIdToken]);
+  }, [signInWithIdToken, router, setGlobalLoading]);
 
   if (error) {
     return (

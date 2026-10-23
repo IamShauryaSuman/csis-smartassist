@@ -11,20 +11,23 @@ Flow:
 
 from __future__ import annotations
 
-import io
 import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from core.auth import require_permission
 from core.config import get_settings
 from core.database import get_supabase_client
 from services.llm.hybrid import get_hybrid_client
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/rag", tags=["rag"])
+router = APIRouter(
+    prefix="/rag", tags=["rag"],
+    dependencies=[Depends(require_permission("knowledge.manage"))],
+)
 
 # Maximum chunk size in characters for text splitting
 CHUNK_SIZE = 1000
@@ -61,39 +64,6 @@ class RagStatsResponse(BaseModel):
     total_files: int
     total_chunks: int
     files: list[dict[str, Any]]
-
-
-# ── Auth Helper ─────────────────────────────────────────────────────────────
-
-
-def _extract_user_id(authorization: str) -> str:
-    """Validate JWT and extract user ID."""
-    settings = get_settings()
-    if getattr(settings, "local_auth", False):
-        return getattr(settings, "local_user_id", "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671")
-
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization header.")
-    token = authorization.removeprefix("Bearer ").strip()
-    db = get_supabase_client()
-    try:
-        return db.auth.get_user(token).user.id
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token.")
-
-
-def _require_admin(user_id: str) -> None:
-    """Verify admin privileges."""
-    settings = get_settings()
-    if getattr(settings, "local_auth", False):
-        return  # In local mode, admin access is granted
-
-    db = get_supabase_client()
-    profile = (
-        db.table("profiles").select("is_admin").eq("id", user_id).single().execute()
-    )
-    if not profile.data or not profile.data.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required.")
 
 
 # ── Google Drive Helpers ────────────────────────────────────────────────────
@@ -273,17 +243,13 @@ def _chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OV
 
 
 @router.get("/delta", response_model=DeltaResponse)
-async def get_rag_delta(authorization: str = Header(...)):
+async def get_rag_delta():
     """Compare Google Drive state against the database and return the diff.
 
     Returns three sets: new files, modified files (checksum mismatch),
     and deleted files (in DB but not in Drive).
     """
-    user_id = _extract_user_id(authorization)
-    _require_admin(user_id)
-
     db = get_supabase_client()
-    print("DB OBJECT IS:", db)
     # Get current DB state
     db_files = db.table("rag_files").select("gdrive_id, md5_checksum, name").execute()
     db_map: dict[str, dict] = {f["gdrive_id"]: f for f in (db_files.data or [])}
@@ -328,16 +294,12 @@ async def get_rag_delta(authorization: str = Header(...)):
 @router.post("/sync-file", response_model=SyncResult)
 async def sync_single_file(
     gdrive_id: str = Query(..., description="Google Drive file ID to sync"),
-    authorization: str = Header(...),
 ):
     """Process a single file: download, extract, chunk, embed, and store.
 
     Called by the frontend in a loop for each file in the delta,
     maintaining an O(1) memory footprint per request.
     """
-    user_id = _extract_user_id(authorization)
-    _require_admin(user_id)
-
     db = get_supabase_client()
     llm = get_hybrid_client()
 
@@ -422,12 +384,8 @@ async def sync_single_file(
 @router.delete("/file")
 async def delete_rag_file(
     gdrive_id: str = Query(..., description="Google Drive file ID to remove"),
-    authorization: str = Header(...),
 ):
     """Remove a file and all its chunks from the RAG index."""
-    user_id = _extract_user_id(authorization)
-    _require_admin(user_id)
-
     db = get_supabase_client()
     result = db.table("rag_files").delete().eq("gdrive_id", gdrive_id).execute()
 
@@ -438,11 +396,8 @@ async def delete_rag_file(
 
 
 @router.get("/stats", response_model=RagStatsResponse)
-async def get_rag_stats(authorization: str = Header(...)):
+async def get_rag_stats():
     """Return RAG pipeline statistics: file count, chunk count, per-file details."""
-    user_id = _extract_user_id(authorization)
-    _require_admin(user_id)
-
     db = get_supabase_client()
 
     files = db.table("rag_files").select("id, name, mime_type, updated_at").execute()

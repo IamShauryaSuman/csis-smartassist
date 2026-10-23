@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import type { Booking, BookingProposalPayload } from "@/lib/types";
 import { FileEdit, Clock, CheckCircle, XCircle } from "lucide-react";
 import styles from "./booking-proposal.module.scss";
@@ -12,7 +12,7 @@ interface BookingProposalProps {
   onCreateBooking: (payload: BookingProposalPayload) => Promise<Booking>;
   onLockBooking: (bookingId: string) => Promise<Booking>;
   onUnlockBooking: (bookingId: string) => Promise<Booking>;
-  onUpdateBooking: (bookingId: string, data: any) => Promise<Booking>;
+  onUpdateBooking: (bookingId: string, data: BookingProposalPayload) => Promise<Booking>;
 }
 
 type CardState = "draft" | "pending" | "approved" | "rejected" | "expired";
@@ -142,7 +142,7 @@ export default function BookingProposal({
       try {
         await onUnlockBooking(dbBooking.id);
         setIsEditing(false);
-      } catch (err) {
+      } catch {
         setLocalError("Failed to unlock booking. Please refresh the page.");
       } finally {
         setIsLoading(false);

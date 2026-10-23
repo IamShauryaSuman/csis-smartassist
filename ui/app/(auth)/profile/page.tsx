@@ -8,9 +8,16 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { usePermissions } from "@/lib/contexts/permissions-context";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { useProfile } from "@/lib/hooks/useProfile";
 import styles from "./page.module.scss";
+
+const ROLE_LABELS = {
+  booking_admin: "Booking Admin",
+  knowledge_admin: "Knowledge Admin",
+  super_admin: "Super Admin",
+};
 
 const INTEREST_OPTIONS = [
   "Machine Learning",
@@ -33,6 +40,7 @@ const INTEREST_OPTIONS = [
 
 export default function ProfilePage() {
   const { user } = useAuth();
+  const { access, loading: accessLoading, error: accessError } = usePermissions();
   const { profile, updateProfile } = useProfile(user?.id);
   const [editData, setEditData] = useState({
     full_name: "",
@@ -81,6 +89,10 @@ export default function ProfilePage() {
 
   if (!profile) return null;
 
+  let accessLabel = access?.roles.map(role => ROLE_LABELS[role]).join(", ") || "User";
+  if (accessLoading) accessLabel = "Loading...";
+  if (accessError) accessLabel = "Access unavailable";
+
   return (
     <div className={styles.page}>
       <div className={styles.container}>
@@ -99,9 +111,9 @@ export default function ProfilePage() {
             <span className={styles.value}>{profile.email}</span>
           </div>
           <div className={styles.field}>
-            <span className={styles.label}>Role</span>
+            <span className={styles.label}>Access</span>
             <span className={styles.value}>
-              {profile.is_admin ? "Administrator" : "User"}
+              {accessLabel}
             </span>
           </div>
         </div>

@@ -8,7 +8,6 @@
  */
 
 import { useCallback } from "react";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { useProfile } from "@/lib/hooks/useProfile";
 import OnboardingForm from "@/components/auth/onboarding-form";
@@ -16,7 +15,6 @@ import type { OnboardingFormData } from "@/lib/types";
 import styles from "./page.module.scss";
 
 export default function OnboardingPage() {
-  const router = useRouter();
   const { user } = useAuth();
   const { createProfile } = useProfile(user?.id);
 

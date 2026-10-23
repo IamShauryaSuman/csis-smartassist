@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useState } from "react";
+import { createContext, useCallback, useContext, useState } from "react";
 import LoadingScreen from "@/components/layout/loading-screen";
 
 interface LoadingContextType {
@@ -14,15 +14,14 @@ const LoadingContext = createContext<LoadingContextType>({
 export function LoadingProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const setGlobalLoading = useCallback((isLoading: boolean, nextMessage?: string) => {
+    setLoading(isLoading);
+    if (nextMessage) setMessage(nextMessage);
+  }, []);
 
   return (
     <LoadingContext.Provider
-      value={{
-        setGlobalLoading: (l, m) => {
-          setLoading(l);
-          if (m) setMessage(m);
-        },
-      }}
+      value={{ setGlobalLoading }}
     >
       {children}
       {loading && <LoadingScreen message={message} />}

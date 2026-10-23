@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
 
+from core.auth import check_permission, extract_user_id as _extract_user_id
 from core.config import get_settings
 from core.database import get_supabase_client
 from core.rooms import get_all_rooms, get_room_by_id
@@ -71,45 +72,6 @@ class BookingResponse(BaseModel):
     locked_by: str | None = None
     created_at: str
     updated_at: str
-
-
-# ── Auth Helper ─────────────────────────────────────────────────────────────
-
-
-def _extract_user_id(authorization: str) -> str:
-    """Validate JWT and extract user ID."""
-    settings = get_settings()
-    if getattr(settings, "local_auth", False):
-        return getattr(settings, "local_user_id", "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671")
-
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization header.")
-
-    token = authorization.removeprefix("Bearer ").strip()
-    db = get_supabase_client()
-    try:
-        user_response = db.auth.get_user(token)
-        return user_response.user.id
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token.")
-
-
-def _require_admin(user_id: str) -> None:
-    """Verify the user has admin privileges."""
-    settings = get_settings()
-    if getattr(settings, "local_auth", False):
-        return  # In local mode, admin access is granted
-
-    db = get_supabase_client()
-    profile = (
-        db.table("profiles")
-        .select("is_admin")
-        .eq("id", user_id)
-        .single()
-        .execute()
-    )
-    if not profile.data or not profile.data.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required.")
 
 
 async def _validate_booking_request(body: CreateBookingRequest) -> tuple[dict, datetime, datetime]:
@@ -212,13 +174,11 @@ async def create_booking(
         if getattr(get_settings(), "local_auth", False):
             requester_name = "SmartAssist Admin"
 
-    # Fetch all admins to notify
+    # Notify users responsible for booking approvals.
     admin_emails = []
     try:
         admins = (
-            db.table("profiles")
-            .select("email")
-            .eq("is_admin", True)
+            db.rpc("get_permission_recipients", {"permission_name": "bookings.manage"})
             .execute()
         )
         admin_emails = [admin["email"] for admin in admins.data if admin.get("email")]
@@ -259,7 +219,7 @@ async def list_bookings(
     query = db.table("bookings").select("*")
 
     if all_users:
-        _require_admin(user_id)
+        check_permission(user_id, "bookings.manage")
     else:
         query = query.eq("user_id", user_id)
 
@@ -291,7 +251,7 @@ async def get_booking(
 
     # Allow access if owner or admin
     if result.data["user_id"] != user_id:
-        _require_admin(user_id)
+        check_permission(user_id, "bookings.manage")
 
     return result.data
 
@@ -343,7 +303,7 @@ async def unlock_booking(
     
     # Allow unlock if user owns it, or if admin.
     if booking["user_id"] != user_id:
-        _require_admin(user_id)
+        check_permission(user_id, "bookings.manage")
 
     update_data = {
         "is_locked": False,
@@ -412,7 +372,7 @@ async def update_booking_status(
     and sends an email notification to the requester.
     """
     user_id = _extract_user_id(authorization)
-    _require_admin(user_id)
+    check_permission(user_id, "bookings.manage")
     db = get_supabase_client()
 
     if body.status not in ("approved", "rejected"):
@@ -581,7 +541,7 @@ async def test_email_endpoint(
     authorization: str = Header(...),
 ):
     """Test sending an email notification via Gmail API."""
-    _extract_user_id(authorization)
+    check_permission(_extract_user_id(authorization), "bookings.manage")
     try:
         success = await send_booking_notification(
             to_email=target_email,
@@ -603,15 +563,13 @@ async def test_email_endpoint(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send test email: {type(e).__name__}: {str(e)}")
 
-
-
 @router.post("/test-calendar")
 async def test_calendar_endpoint(
     room_id: str = Query("csis_conference_room", description="Enabled room ID to test"),
     authorization: str = Header(...),
 ):
     """Test inserting a test event into Google Calendar."""
-    _require_admin(_extract_user_id(authorization))
+    check_permission(_extract_user_id(authorization), "bookings.manage")
     from datetime import timedelta
     ist_tz = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist_tz)

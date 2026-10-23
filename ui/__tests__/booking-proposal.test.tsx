@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import BookingProposal from '../components/bookings/booking-proposal';
+import type { ComponentProps } from 'react';
 import { mockBooking } from './fixtures';
 
 const mockPayload = {
@@ -13,7 +14,7 @@ const mockPayload = {
 };
 
 describe('BookingProposal', () => {
-  let defaultProps: any;
+  let defaultProps: ComponentProps<typeof BookingProposal>;
 
   beforeEach(() => {
     vi.clearAllMocks();

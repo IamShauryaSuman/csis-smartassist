@@ -28,3 +28,7 @@ coverage.xml
 
 # Local task planning
 /plan.md
+
+# Local development tools
+.tools/
+.npm-cache/

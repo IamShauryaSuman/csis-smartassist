@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import get_settings
-from routes import booking, chat, rag
+from routes import admin, booking, chat, rag
 
 # ── Logging ─────────────────────────────────────────────────────────────────
 
@@ -55,6 +55,7 @@ app.add_middleware(
 
 # ── Router Registration ────────────────────────────────────────────────────
 
+app.include_router(admin.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(booking.router, prefix="/api")
 app.include_router(rag.router, prefix="/api")

@@ -1,0 +1,48 @@
+@use 'variables' as *;
+@use 'mixins' as *;
+
+.manager {
+  @include flex-column;
+  gap: $space-4;
+
+  p { color: $text-secondary; }
+
+  button {
+    @include button-ghost;
+    border: 1px solid $border-subtle;
+    padding: $space-2 $space-4;
+
+    &:disabled { opacity: 0.5; cursor: default; }
+  }
+
+  input:not([type='checkbox']) {
+    background: $bg-tertiary;
+    border: 1px solid $border-subtle;
+    border-radius: $radius-md;
+    color: $text-primary;
+    padding: $space-2;
+  }
+
+  [role='alert'] { color: $error; }
+}
+
+.search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: $space-4;
+}
+
+.user {
+  border: 1px solid $border-subtle;
+  border-radius: $radius-md;
+  padding: $space-4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: $space-3;
+  min-width: 0;
+
+  legend { overflow-wrap: anywhere; }
+  label { display: flex; align-items: center; gap: $space-2; }
+}

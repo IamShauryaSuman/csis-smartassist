@@ -141,7 +141,7 @@ export function useChat(sessionId: string | null) {
                 setSessions(data);
                 return true;
               }
-            } catch (e) {
+            } catch {
               // Ignore errors during polling
             }
             return false;
@@ -163,7 +163,7 @@ export function useChat(sessionId: string | null) {
           // If not a new chat, just reload once to ensure sync (e.g. updated_at timestamp)
           setTimeout(() => loadSessions(), 1000);
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error("Failed to send message:", error);
         
         // Remove the empty assistant placeholder bubble on failure
@@ -175,7 +175,7 @@ export function useChat(sessionId: string | null) {
               id: `error-${Date.now()}`,
               session_id: targetSessionId,
               role: "assistant",
-              content: `**Error:** ${error.message || "I encountered an issue processing your message. Please try again."}`,
+              content: `**Error:** ${error instanceof Error ? error.message : "I encountered an issue processing your message. Please try again."}`,
               interactive_type: null,
               interactive_payload: null,
               created_at: new Date().toISOString(),

@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { DeltaResponse, FileDelta, RagStats, SyncResult } from "@/lib/types";
+import type { DeltaResponse, FileDelta, RagStats } from "@/lib/types";
 import styles from "./rag-dashboard.module.scss";
 
 export default function RagDashboard() {
@@ -18,7 +18,6 @@ export default function RagDashboard() {
   const [scanning, setScanning] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0 });
-  const [syncLog, setSyncLog] = useState<SyncResult[]>([]);
 
   // Load stats on mount
   useEffect(() => {
@@ -57,7 +56,6 @@ export default function RagDashboard() {
 
     setSyncing(true);
     setSyncProgress({ current: 0, total });
-    setSyncLog([]);
 
     // Process deletions first
     for (const file of filesToDelete) {
@@ -72,8 +70,7 @@ export default function RagDashboard() {
     // Process new and modified files one-by-one (O(1) memory footprint)
     for (const file of filesToSync) {
       try {
-        const result = await api.syncFile(file.gdrive_id);
-        setSyncLog((prev) => [...prev, result]);
+        await api.syncFile(file.gdrive_id);
         setSyncProgress((prev) => ({ ...prev, current: prev.current + 1 }));
       } catch (error) {
         console.error(`Failed to sync ${file.name}:`, error);

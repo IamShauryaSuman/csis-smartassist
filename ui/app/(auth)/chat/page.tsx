@@ -15,7 +15,7 @@ import { useState } from "react";
 export default function NewChatPage() {
   const router = useRouter();
   const { createSession } = useChatContext();
-  const { sendMessage, sending } = useChat(null);
+  const { sending } = useChat(null);
   const [mascotLoaded, setMascotLoaded] = useState(false);
 
   const handleSend = async (content: string) => {

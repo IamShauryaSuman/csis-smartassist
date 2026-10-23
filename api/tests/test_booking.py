@@ -41,6 +41,9 @@ class MockTable:
         return MagicMock(data=format_data([]))
 
 class MockSupabaseClient:
+    def rpc(self, name, params):
+        return MagicMock(execute=lambda: MagicMock(data=[{"email": "admin@example.com"}]))
+
     def table(self, name):
         return MockTable(name)
 
@@ -55,7 +58,7 @@ def mock_supabase():
 
 @pytest.fixture
 def mock_admin_check():
-    with patch("routes.booking._require_admin") as mock:
+    with patch("routes.booking.check_permission") as mock:
         yield mock
 
 

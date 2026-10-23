@@ -80,7 +80,7 @@ function LandingContent() {
         } else {
           setSystemStatus("offline");
         }
-      } catch (err) {
+      } catch {
         setSystemStatus("offline");
       }
     };

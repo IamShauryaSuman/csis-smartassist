@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { useProfile } from "@/lib/hooks/useProfile";
+import { PermissionsProvider } from "@/lib/contexts/permissions-context";
 import Navbar from "@/components/layout/navbar";
 import { useGlobalLoading } from "@/lib/contexts/loading-context";
 import styles from "./layout.module.scss";
@@ -73,7 +74,7 @@ export default function AuthLayout({
   }, [authLoading, profileLoading, ready, setGlobalLoading]);
 
   // Loading state
-  if (authLoading || profileLoading || !ready) {
+  if (authLoading || profileLoading || !ready || !user) {
     return null;
   }
 
@@ -83,11 +84,13 @@ export default function AuthLayout({
   }
 
   return (
-    <div className={styles.layoutWrapper}>
-      <Navbar profile={profile} />
-      <main className={styles.mainContent}>
-        {children}
-      </main>
-    </div>
+    <PermissionsProvider userId={user.id}>
+      <div className={styles.layoutWrapper}>
+        <Navbar profile={profile} />
+        <main className={styles.mainContent}>
+          {children}
+        </main>
+      </div>
+    </PermissionsProvider>
   );
 }

@@ -15,10 +15,10 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from core.config import get_settings
+from core.auth import extract_user_id as _extract_user_id
 from core.database import get_supabase_client
 from core.prompts import (
     CALENDAR_SYSTEM_PROMPT,
@@ -77,33 +77,6 @@ class ChatResponse(BaseModel):
     intent: str
     confidence: float
     session_title: str | None = None
-
-
-# ── Auth Helper ─────────────────────────────────────────────────────────────
-
-
-def _extract_user_id(authorization: str) -> str:
-    """Extract and validate user ID from the Supabase JWT.
-
-    The frontend sends the access token; we verify it via Supabase admin client.
-    In LOCAL_AUTH mode, we skip validation and return a fixed local user ID.
-    """
-    # ── Local Auth Bypass ────────────────────────────────────────────────
-    settings = get_settings()
-    if getattr(settings, "local_auth", False):
-        return getattr(settings, "local_user_id", "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671")
-
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization header.")
-
-    token = authorization.removeprefix("Bearer ").strip()
-    db = get_supabase_client()
-
-    try:
-        user_response = db.auth.get_user(token)
-        return user_response.user.id
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token.")
 
 
 # ── Session Endpoints ───────────────────────────────────────────────────────
@@ -548,7 +521,6 @@ async def send_message(
 # ── Memory Synthesis Endpoint ───────────────────────────────────────────────
 
 
-@router.post("/sessions/{session_id}/synthesize")
 async def _synthesize_memory_task(session_id: str, user_id: str):
     """Background task to synthesize memory using the hybrid LLM client."""
     db = get_supabase_client()
@@ -598,13 +570,19 @@ async def _synthesize_memory_task(session_id: str, user_id: str):
         logger.error(f"Error in memory synthesis task: {e}")
         return {"status": "error"}
 
-@router.post("/sessions/{session_id}/synthesize_memory")
+@router.post("/sessions/{session_id}/synthesize")
+@router.post("/sessions/{session_id}/synthesize_memory", include_in_schema=False)
 async def synthesize_session_memory(
     session_id: str,
     authorization: str = Header(...),
 ):
     """Trigger memory synthesis for a completed chat session."""
     user_id = _extract_user_id(authorization)
+    session = get_supabase_client().table("chat_sessions").select("id").eq(
+        "id", session_id
+    ).eq("user_id", user_id).execute()
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found.")
     return await _synthesize_memory_task(session_id, user_id)
 
 

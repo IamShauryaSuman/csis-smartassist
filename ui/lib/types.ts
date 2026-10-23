@@ -16,9 +16,29 @@ export interface Profile {
   year: number | null;
   interests: string[];
   synthesized_memory: string;
-  is_admin: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export type AdminRoleName = "booking_admin" | "knowledge_admin" | "super_admin";
+export type Permission = "bookings.manage" | "knowledge.manage" | "roles.manage";
+
+export interface UserAccess {
+  user_id: string;
+  roles: AdminRoleName[];
+  permissions: Permission[];
+}
+
+export interface AdminRole {
+  id: AdminRoleName;
+  name: string;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  full_name: string | null;
+  roles: AdminRoleName[];
 }
 
 export interface ChatSession {

@@ -4,7 +4,7 @@
  * Manages Supabase auth state, Google OAuth sign-in/out,
  * and synchronizes the API client token.
  *
- * In LOCAL_AUTH mode, creates a fake local admin session
+ * In LOCAL_AUTH mode, creates a fixed local session
  * so the app works on intranet servers without Google OAuth.
  */
 
@@ -76,9 +76,7 @@ export function useAuth() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
-      if (session) {
-        api.setToken(session.access_token);
-      }
+      api.setToken(session?.access_token ?? "");
       setLoading(false);
     });
 

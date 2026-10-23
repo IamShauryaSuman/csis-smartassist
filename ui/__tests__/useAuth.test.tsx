@@ -46,9 +46,10 @@ vi.mock('../lib/supabase/client', () => ({
 import { useAuth } from '../lib/hooks/useAuth';
 
 const mockUser = { id: 'u-123', email: 'test@goa.bits-pilani.ac.in' };
+type TestSession = { user: typeof mockUser; access_token: string } | null;
 
 // Holds the registered onAuthStateChange callback so tests can call it manually
-let capturedAuthCallback: ((event: string, session: any) => void) | undefined;
+let capturedAuthCallback: ((event: string, session: TestSession) => void) | undefined;
 
 describe('useAuth', () => {
   beforeEach(() => {
@@ -61,7 +62,7 @@ describe('useAuth', () => {
       data: { session: { user: mockUser, access_token: 'mock-token' } },
     });
     // Capture the callback when the hook registers it
-    mockOnAuthStateChange.mockImplementation((cb: (event: string, session: any) => void) => {
+    mockOnAuthStateChange.mockImplementation((cb: (event: string, session: TestSession) => void) => {
       capturedAuthCallback = cb;
       return { data: { subscription: { unsubscribe: mockUnsubscribe } } };
     });
@@ -158,5 +159,6 @@ describe('useAuth', () => {
     await act(async () => { capturedAuthCallback?.('SIGNED_OUT', null); });
 
     expect(result.current.user).toBeNull();
+    expect(mockSetToken).toHaveBeenLastCalledWith('');
   });
 });

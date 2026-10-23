@@ -23,7 +23,6 @@ const DEFAULT_LOCAL_PROFILE: Profile = {
   year: null,
   interests: ["Systems", "AI", "Administration"],
   synthesized_memory: "",
-  is_admin: true,
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
 };
@@ -118,7 +117,6 @@ export function useProfile(userId: string | undefined) {
         year: formData.year,
         interests: formData.interests,
         synthesized_memory: "",
-        is_admin: false,
       };
 
       const { data, error } = await supabase

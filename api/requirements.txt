@@ -8,6 +8,7 @@ google-api-python-client>=2.160.0
 python-dotenv>=1.0.1
 pydantic>=2.10.0
 pydantic-settings>=2.7.0
+tzdata>=2024.1; sys_platform == "win32"
 httpx>=0.28.0
 python-multipart>=0.0.18
 pytest
