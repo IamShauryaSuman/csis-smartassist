@@ -16,9 +16,29 @@ export interface Profile {
   year: number | null;
   interests: string[];
   synthesized_memory: string;
-  is_admin: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export type AdminRoleName = "booking_admin" | "knowledge_admin" | "super_admin";
+export type Permission = "bookings.manage" | "knowledge.manage" | "roles.manage";
+
+export interface UserAccess {
+  user_id: string;
+  roles: AdminRoleName[];
+  permissions: Permission[];
+}
+
+export interface AdminRole {
+  id: AdminRoleName;
+  name: string;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  full_name: string | null;
+  roles: AdminRoleName[];
 }
 
 export interface ChatSession {
@@ -51,6 +71,10 @@ export interface Booking {
   end_time: string;
   status: "pending" | "approved" | "rejected" | "expired";
   admin_notes: string | null;
+  acknowledged_use?: boolean;
+  acknowledged_availability?: boolean;
+  calendar_event_id?: string | null;
+  calendar_event_link?: string | null;
   is_locked?: boolean;
   locked_by?: string | null;
   locked_at?: string | null;
@@ -117,9 +141,10 @@ export interface Room {
   id: string;
   name: string;
   type: string;
-  capacity: number;
+  capacity: number | null;
   hardware: string[];
-  calendar_id: string;
+  calendar_id: string | null;
+  is_general_classroom?: boolean;
   description: string;
 }
 
@@ -130,6 +155,8 @@ export interface BookingProposalPayload {
   start_time: string;
   end_time: string;
   description?: string;
+  acknowledged_use?: boolean;
+  acknowledged_availability?: boolean;
 }
 
 // ── Onboarding Types ───────────────────────────────────────────────────────

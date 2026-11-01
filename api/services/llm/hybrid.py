@@ -14,13 +14,14 @@ from functools import lru_cache
 from core.config import get_settings
 from services.llm.base import BaseLLMClient
 from services.llm.gemini import GeminiClient
+from services.llm.ollama import OllamaClient
 from services.llm.openai import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
 
 
 class HybridLLMClient(BaseLLMClient):
-    """Hybrid client that manages fallback between Gemini, Groq, and OpenRouter."""
+    """Hybrid client that manages fallback between Gemini, Groq, OpenRouter, and Ollama."""
 
     def __init__(self):
         settings = get_settings()
@@ -37,6 +38,19 @@ class HybridLLMClient(BaseLLMClient):
             base_url="https://openrouter.ai/api/v1",
             default_model=settings.openrouter_model,
         )
+
+        self.llm_provider = settings.llm_provider
+        self.embedding_provider = settings.embedding_provider
+
+        # Initialize local Ollama providers if configured
+        self.ollama = None
+        if self.llm_provider == "ollama" or self.embedding_provider == "ollama":
+            self.ollama = OllamaClient()
+            self.ollama_llm = self.ollama
+            self.ollama_embed = self.ollama
+        else:
+            self.ollama_llm = None
+            self.ollama_embed = None
 
     async def _execute_with_fallback(self, method_name: str, chain: list[BaseLLMClient], *args, **kwargs):
         """Execute a method across a chain of clients, falling back on error."""
@@ -110,7 +124,10 @@ class HybridLLMClient(BaseLLMClient):
         max_tokens: int = 4096,
         fast_model: bool = False,
     ) -> str:
-        """Response Generation: Gemini -> Groq -> OpenRouter"""
+        """Response Generation: Ollama (if configured) else Gemini -> Groq -> OpenRouter"""
+        if self.llm_provider == "ollama" and self.ollama_llm:
+            return await self.ollama_llm.generate(prompt, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens, fast_model=fast_model)
+        
         chain = [self.gemini, self.groq, self.openrouter]
         return await self._execute_with_fallback(
             "generate", chain, prompt, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens, fast_model=fast_model
@@ -125,7 +142,12 @@ class HybridLLMClient(BaseLLMClient):
         max_tokens: int = 4096,
         fast_model: bool = False,
     ):
-        """Response Generation: Gemini -> Groq -> OpenRouter"""
+        """Response Generation Stream: Ollama (if configured) else Gemini -> Groq -> OpenRouter"""
+        if self.llm_provider == "ollama" and self.ollama_llm:
+            async for chunk in self.ollama_llm.generate_stream(prompt, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens, fast_model=fast_model):
+                yield chunk
+            return
+
         chain = [self.gemini, self.groq, self.openrouter]
         async for chunk in self._execute_stream_with_fallback(
             "generate_stream", chain, prompt, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens, fast_model=fast_model
@@ -140,29 +162,43 @@ class HybridLLMClient(BaseLLMClient):
         temperature: float = 0.1,
         fast_model: bool = False,
     ) -> dict:
-        """Intent Classification: Groq -> Gemini -> OpenRouter"""
+        """Intent Classification: Ollama (if configured) else Groq -> Gemini -> OpenRouter"""
+        if self.llm_provider == "ollama" and self.ollama_llm:
+            # For Ollama, we enforce JSON format via the system prompt implicitly or Ollama's format="json" (which the openai client supports via response_format if we passed it, but we can just let it try its best).
+            return await self.ollama_llm.generate_json(prompt, system_prompt=system_prompt, temperature=temperature, fast_model=fast_model)
+
         chain = [self.groq, self.gemini, self.openrouter]
         return await self._execute_with_fallback(
             "generate_json", chain, prompt, system_prompt=system_prompt, temperature=temperature, fast_model=fast_model
         )
 
     async def embed(self, text: str) -> list[float]:
-        """Embeddings: strictly Gemini."""
+        """Embeddings: Ollama (if configured) else Gemini."""
+        if self.embedding_provider == "ollama" and self.ollama_embed:
+            return await self.ollama_embed.embed(text)
         return await self.gemini.embed(text)
 
     async def embed_query(self, text: str) -> list[float]:
-        """Query Embeddings: strictly Gemini."""
+        """Query Embeddings: Ollama (if configured) else Gemini."""
+        if self.embedding_provider == "ollama" and self.ollama_embed:
+            return await self.ollama_embed.embed_query(text)
         return await self.gemini.embed_query(text)
     
     async def generate_title(self, prompt: str) -> str:
-        """Title Generation: OpenRouter -> Groq -> Gemini"""
-        chain = [self.openrouter, self.groq, self.gemini]
+        """Title Generation: Ollama (if configured) else Groq -> OpenRouter -> Gemini"""
+        if self.llm_provider == "ollama" and self.ollama_llm:
+            return await self.ollama_llm.generate(prompt, temperature=0.3, max_tokens=300)
+
+        chain = [self.groq, self.openrouter, self.gemini]
         return await self._execute_with_fallback(
-            "generate", chain, prompt, temperature=0.3, max_tokens=50
+            "generate", chain, prompt, temperature=0.3, max_tokens=300
         )
 
     async def generate_memory(self, prompt: str) -> str:
-        """Memory Synthesis: Groq -> OpenRouter -> Gemini"""
+        """Memory Synthesis: Ollama (if configured) else Groq -> OpenRouter -> Gemini"""
+        if self.llm_provider == "ollama" and self.ollama_llm:
+            return await self.ollama_llm.generate(prompt, temperature=0.2, max_tokens=1024)
+
         chain = [self.groq, self.openrouter, self.gemini]
         return await self._execute_with_fallback(
             "generate", chain, prompt, temperature=0.2, max_tokens=1024

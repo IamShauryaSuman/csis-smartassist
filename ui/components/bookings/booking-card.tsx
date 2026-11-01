@@ -8,7 +8,7 @@
  */
 
 import type { Booking } from "@/lib/types";
-import { MapPin, Clock, FileText } from "lucide-react";
+import { MapPin, Clock, FileText, ExternalLink } from "lucide-react";
 import styles from "./booking-card.module.scss";
 
 interface BookingCardProps {
@@ -19,6 +19,7 @@ export default function BookingCard({ booking }: BookingCardProps) {
   const formatDateTime = (iso: string) => {
     try {
       return new Date(iso).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
         weekday: "short",
         month: "short",
         day: "numeric",
@@ -62,6 +63,14 @@ export default function BookingCard({ booking }: BookingCardProps) {
           <div className={styles.row}>
             <span className={styles.icon}><FileText size={14} /></span>
             <span className={styles.value}>{booking.description}</span>
+          </div>
+        )}
+        {booking.status === "approved" && booking.calendar_event_link && (
+          <div className={styles.row}>
+            <span className={styles.icon}><ExternalLink size={14} /></span>
+            <a className={styles.calendarLink} href={booking.calendar_event_link} target="_blank" rel="noopener noreferrer">
+              View calendar event
+            </a>
           </div>
         )}
       </div>

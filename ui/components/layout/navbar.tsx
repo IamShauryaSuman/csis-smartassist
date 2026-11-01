@@ -9,7 +9,9 @@
 
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
+import { usePermissions } from "@/lib/contexts/permissions-context";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { Menu, X } from "lucide-react";
 import type { Profile } from "@/lib/types";
@@ -53,6 +55,8 @@ function ChevronDownIcon() {
 
 export default function Navbar({ profile }: NavbarProps) {
   const { user, signOut } = useAuth();
+  const { can } = usePermissions();
+  const canAdmin = can("bookings.manage") || can("knowledge.manage") || can("roles.manage");
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -102,7 +106,7 @@ export default function Navbar({ profile }: NavbarProps) {
       </div>
 
       <div className={styles.right}>
-        {profile?.is_admin && (
+        {canAdmin && (
           <Link
             href="/admin"
             className={`${styles.navLink} ${styles.adminLink} ${
@@ -120,9 +124,12 @@ export default function Navbar({ profile }: NavbarProps) {
             aria-expanded={dropdownOpen}
           >
             {avatarUrl ? (
-              <img
+              <Image
                 src={avatarUrl}
                 alt="Avatar"
+                width={32}
+                height={32}
+                unoptimized
                 className={styles.avatar}
                 referrerPolicy="no-referrer"
               />
@@ -182,7 +189,7 @@ export default function Navbar({ profile }: NavbarProps) {
               {item.label}
             </Link>
           ))}
-          {profile?.is_admin && (
+          {canAdmin && (
             <Link
               href="/admin"
               className={styles.mobileNavLink}

@@ -65,12 +65,13 @@ export function useChat(sessionId: string | null) {
       setMessages((prev) => [...prev, optimisticUserMsg]);
       setSending(true);
 
-      let assistantMsgId = `tmp-asst-${Date.now()}`;
+      const placeholderAssistantId = `tmp-asst-${Date.now()}`;
+      let assistantMsgId = placeholderAssistantId;
       try {
         
         // Add an empty assistant message to be filled
         const emptyAssistantMsg: Message = {
-          id: assistantMsgId,
+          id: placeholderAssistantId,
           session_id: targetSessionId,
           role: "assistant",
           content: "",
@@ -132,41 +133,49 @@ export function useChat(sessionId: string | null) {
 
         // Poll for title update if we are in a "New Chat"
         if (currentTitle === "New Chat" || currentTitle === "New Chat Session") {
-          let attempts = 0;
-          const pollInterval = setInterval(async () => {
-            attempts++;
-            if (attempts > 5) {
-              clearInterval(pollInterval);
-              return;
-            }
+          const checkTitle = async () => {
             try {
               const data = await api.listSessions();
               const updatedSession = data.find(s => s.id === targetSessionId);
               if (updatedSession && updatedSession.title !== "New Chat" && updatedSession.title !== "New Chat Session") {
                 setSessions(data);
-                clearInterval(pollInterval);
+                return true;
               }
-            } catch (e) {
+            } catch {
               // Ignore errors during polling
             }
-          }, 2000);
+            return false;
+          };
+
+          // Check immediately first, then poll every 2s up to 5 times
+          checkTitle().then((done) => {
+            if (done) return;
+            let attempts = 0;
+            const pollInterval = setInterval(async () => {
+              attempts++;
+              const isUpdated = await checkTitle();
+              if (isUpdated || attempts >= 5) {
+                clearInterval(pollInterval);
+              }
+            }, 2000);
+          });
         } else {
           // If not a new chat, just reload once to ensure sync (e.g. updated_at timestamp)
           setTimeout(() => loadSessions(), 1000);
         }
-      } catch (error: any) {
+      } catch (error) {
         console.error("Failed to send message:", error);
         
         // Remove the empty assistant placeholder bubble on failure
         setMessages((prev) => {
-          const filtered = prev.filter((m) => m.id !== assistantMsgId);
+          const filtered = prev.filter((m) => m.id !== assistantMsgId && m.id !== placeholderAssistantId);
           return [
             ...filtered,
             {
               id: `error-${Date.now()}`,
               session_id: targetSessionId,
               role: "assistant",
-              content: `**Error:** ${error.message || "I encountered an issue processing your message. Please try again."}`,
+              content: `**Error:** ${error instanceof Error ? error.message : "I encountered an issue processing your message. Please try again."}`,
               interactive_type: null,
               interactive_payload: null,
               created_at: new Date().toISOString(),

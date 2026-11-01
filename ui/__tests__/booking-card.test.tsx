@@ -50,6 +50,13 @@ describe('BookingCard', () => {
     expect(screen.getByText('APPROVED')).toBeInTheDocument();
   });
 
+  it('links the created calendar event only after approval', () => {
+    const approved = { ...mockApprovedBooking, calendar_event_link: 'https://calendar.google.com/event/123' };
+    render(<BookingCard booking={approved} />);
+    expect(screen.getByRole('link', { name: 'View calendar event' }))
+      .toHaveAttribute('href', 'https://calendar.google.com/event/123');
+  });
+
   it('shows REJECTED status badge for rejected bookings', () => {
     render(<BookingCard booking={mockRejectedBooking} />);
     expect(screen.getByText('REJECTED')).toBeInTheDocument();

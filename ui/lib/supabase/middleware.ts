@@ -3,12 +3,21 @@
  *
  * Used by the Next.js middleware to keep the session alive and
  * handle cookie synchronization between browser and server.
+ *
+ * In LOCAL_AUTH mode, all routes are accessible without authentication.
  */
 
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function updateSession(request: NextRequest) {
+  // ── Local Auth Bypass ─────────────────────────────────────────────────
+  // When LOCAL_AUTH is enabled (e.g. intranet deployment without Google OAuth),
+  // skip all Supabase session checks and allow every route through.
+  if (process.env.LOCAL_AUTH === "true") {
+    return NextResponse.next({ request });
+  }
+
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -19,7 +28,7 @@ export async function updateSession(request: NextRequest) {
         getAll() {
           return request.cookies.getAll();
         },
-        setAll(cookiesToSet: any[]) {
+        setAll(cookiesToSet: { name: string; value: string; options: CookieOptions }[]) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           );
@@ -41,7 +50,6 @@ export async function updateSession(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   const isPublicRoute = 
     pathname === "/" || 
-    pathname.startsWith("/auth/callback") || 
     pathname.startsWith("/auth-callback");
   const isProtectedRoute = !isPublicRoute;
 

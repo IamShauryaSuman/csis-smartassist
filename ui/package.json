@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
@@ -29,6 +29,8 @@
     "three": "^0.170.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.11",
+    "@electric-sql/pglite-pgvector": "^0.0.12",
     "@eslint/eslintrc": "^3.0.0",
     "@playwright/test": "^1.61.1",
     "@testing-library/dom": "^10.4.1",

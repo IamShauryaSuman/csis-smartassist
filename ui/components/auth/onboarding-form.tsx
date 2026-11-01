@@ -67,10 +67,10 @@ export default function OnboardingForm({ onSubmit }: OnboardingFormProps) {
       setLoading(true);
       try {
         await onSubmit(formData);
-      } catch (err: any) {
+      } catch (err) {
         console.error("Onboarding error:", err);
         setError(
-          err?.message || (typeof err === "object" ? JSON.stringify(err) : "An error occurred. Please try again.")
+          err instanceof Error ? err.message : "An error occurred. Please try again."
         );
       } finally {
         setLoading(false);

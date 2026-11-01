@@ -7,7 +7,7 @@
  * and realtime updates via Supabase WebSockets.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { useBookings } from "@/lib/hooks/useBookings";
 import { Calendar } from "lucide-react";

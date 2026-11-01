@@ -105,5 +105,3 @@ If your PR involves interacting with a new external API or building a new LLM pi
 ---
 
 Thank you for contributing to the betterment of the CSIS Department!
-
-<!-- Contributor: Arnav Gupta (@ArnavGupta-codes) -->

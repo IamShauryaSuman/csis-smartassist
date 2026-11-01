@@ -12,6 +12,7 @@ import json
 from functools import lru_cache
 from typing import Any
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,24 +26,50 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def strip_quotes(cls, values: Any) -> Any:
+        """Strip surrounding quotes and whitespace from environment variables (e.g. from env_file)."""
+        if isinstance(values, dict):
+            return {
+                k: (v.strip("\"' \t\r\n") if isinstance(v, str) else v)
+                for k, v in values.items()
+            }
+        return values
+
+    # ── Local Auth (intranet deployment without Google OAuth) ──────────────
+    local_auth: bool = False
+    local_user_id: str = "1cce9d10-6970-4c9f-9f5e-39bc6b6c6671"
+
     # ── Supabase ────────────────────────────────────────────────────────────
-    next_public_supabase_url: str
-    supabase_service_role_key: str
+    next_public_supabase_url: str = ""
+    supabase_service_role_key: str = ""
 
     # ── Google Gemini ───────────────────────────────────────────────────────
-    gemini_api_key: str
+    gemini_api_key: str = ""
 
     # ── Google Service Account (Base64-encoded JSON) ────────────────────────
     google_service_account_json_b64: str = ""
 
-    # ── Google Drive ────────────────────────────────────────────────────────
+    # ── Google Drive & Calendar ─────────────────────────────────────────────
     google_drive_folder_id: str = ""
+    google_calendar_id: str = ""
+    google_calendar_subject: str = ""  # Workspace user for domain-wide delegation, if used
+    google_calendar_client_id: str = ""
+    google_calendar_client_secret: str = ""
+    google_calendar_refresh_token: str = ""  # User OAuth grant with Calendar scope
+
+    # General classroom hours. Set all three before classroom bookings open.
+    classroom_restricted_days: str = ""  # ISO weekdays, e.g. 1,2,3,4,5
+    classroom_restricted_start: str = ""  # Asia/Kolkata HH:MM
+    classroom_restricted_end: str = ""  # Asia/Kolkata HH:MM
 
     # ── Gmail API (OAuth) ───────────────────────────────────────────────────
     gmail_client_id: str = ""
     gmail_client_secret: str = ""
     gmail_refresh_token: str = ""
     gmail_sender_address: str = "CSIS SmartAssist <noreply@yourdomain.com>"
+    notification_override_email: str = ""  # For local/testing redirects
 
     # ── Application ─────────────────────────────────────────────────────────
     allowed_email_domain: str = "goa.bits-pilani.ac.in"
@@ -55,9 +82,20 @@ class Settings(BaseSettings):
 
     # ── Alternate LLM Providers ─────────────────────────────────────────────
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = ""  # Optional override: if empty, dynamically discovered from active provider models
     openrouter_api_key: str = ""
-    openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    openrouter_model: str = ""  # Optional override: if empty, dynamically discovered from active provider models
+
+    # ── AI Provider Toggles ─────────────────────────────────────────────────
+    llm_provider: str = "gemini"  # Options: gemini, ollama
+    embedding_provider: str = "gemini"  # Options: gemini, ollama
+
+    # ── Ollama Local Setup ──────────────────────────────────────────────────
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3:8b"
+    ollama_fast_model: str = "llama3:8b"
+    ollama_embedding_model: str = "nomic-embed-text"
+    embedding_dimension: int = 768
 
     @property
     def google_service_account_info(self) -> dict[str, Any]:

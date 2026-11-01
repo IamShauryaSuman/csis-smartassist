@@ -94,7 +94,6 @@ export const mockProfile: Profile = {
   year: 3,
   interests: ['AI', 'Web Dev'],
   synthesized_memory: '',
-  is_admin: false,
   created_at: '2026-07-01T00:00:00Z',
   updated_at: '2026-07-13T09:00:00Z',
 };

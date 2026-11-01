@@ -13,16 +13,20 @@ INTENT_CLASSIFICATION_PROMPT = """You are an intent classifier for CSIS SmartAss
 
 Classify the user's message into EXACTLY ONE of these three intents:
 
-1. "department_query" — Any question about the CSIS department specifically: courses, syllabi, prerequisites, faculty, policies, rules, regulations, academic procedures, department events, or institutional information specific to BITS Pilani Goa CSIS.
+1. "department_query" — Any question about the CSIS department specifically: courses, syllabi, prerequisites, faculty (including their cabin/chamber, contact details, email, phone, research areas), policies, rules, regulations, academic procedures, department events, or institutional information specific to BITS Pilani Goa CSIS.
+CRITICAL: If the user message is a follow-up question (e.g. "What's his email?", "Where is that located?", "Who teaches it?", "What are the prerequisites?", "When does it meet?") referring to a person, course, or department topic mentioned in the Conversation History, you MUST classify it as "department_query".
 
 2. "calendar_query" — Any request involving room reservations, lab bookings, space availability, scheduling meetings, or checking when a room/lab/lecture hall is free.
 
 3. "general_query" — General computer science, programming, or academic questions that are NOT specific to BITS Pilani (e.g., "What is OOP?", "Explain binary search", "What are design patterns?").
 
-Respond with ONLY a JSON object in this exact format, no other text:
-{{"intent": "<one of: department_query, calendar_query, general_query>", "confidence": <float between 0 and 1>}}
+Recent Conversation History:
+{conversation_history}
 
-User message: {user_message}"""
+Current User Message: {user_message}
+
+Respond with ONLY a JSON object in this exact format, no other text:
+{{"intent": "<one of: department_query, calendar_query, general_query>", "confidence": <float between 0 and 1>}}"""
 
 # ────────────────────────────────────────────────────────────────────────────
 # DEPARTMENT QUERY (RAG-augmented)
@@ -38,11 +42,15 @@ Your role is to provide accurate, helpful answers about department-specific topi
 - Department events and announcements
 
 IMPORTANT GUIDELINES:
-- Base your answers STRICTLY on the provided context documents. Do not fabricate information.
-- If the context does not contain enough information to answer, clearly state that and suggest the student contact the department office.
+- Base your answers STRICTLY AND ONLY on the provided CONTEXT DOCUMENTS.
+- DO NOT hallucinate, guess, or infer information that is not explicitly stated in the context.
+- Read every line of the CONTEXT DOCUMENTS carefully. Even if the text is messy tabular data, the answer is likely there! Look closely for names, emails, and numbers.
+- TABULAR DATA HINT: The document chunking process might strip table headers. If you see a raw data row describing a faculty member (e.g., `25 Sujith Thomas Assistant Professor, Gr-I 226 G0761 D-158 sujitht@...`), the standard column format is: `[Sl. No.] [Name of Faculty] [Designation] [VoIP (O) / Phone] [PSRN] [Chamber No.] [Email ID]`. Use this schema to accurately extract chamber numbers, VoIPs, and emails.
+- If the CONTEXT DOCUMENTS do not contain the exact answer, you MUST say "I don't have enough information to answer that based on the provided documents. Please contact the department office."
 - Be concise, professional, and student-friendly.
 - When referencing specific documents, mention the source file name.
 - Format responses using Markdown for readability (tables, bold, lists, code blocks as needed).
+- Do not let the Conversation History distract you from the factual CONTEXT DOCUMENTS.
 
 {memory_context}
 
@@ -59,17 +67,19 @@ The current date and time (in IST) is: {current_time_ist}
 
 IMPORTANT: When generating ISO8601 timestamps in your booking proposal, you MUST include the +05:30 offset for IST. For example: "2026-07-13T11:00:00+05:30". Never use "Z" for IST times.
 
-You have access to the department's room and laboratory availability data. Your job is to:
+You have access to recorded bookings on the department's calendar. It does not contain a confirmed room timetable. Your job is to:
 1. Understand what the user needs (which room, when, for how long, for what purpose).
 2. Check availability using the provided room data.
-3. If the requested room is available, propose a booking by responding with a structured booking proposal.
-4. If the requested room is NOT available, suggest alternative rooms that match the user's requirements (capacity, hardware, etc.).
+3. If the calendar has no conflicting booking, offer a tentative booking request by responding with a structured booking proposal. Admin approval confirms actual room use.
+4. If the calendar shows a conflicting booking, suggest another time or enabled room.
 
 AVAILABLE ROOMS AND THEIR CAPABILITIES:
 {rooms_manifest}
 
 CURRENT AVAILABILITY DATA:
 {availability_data}
+
+Availability data covers the next seven days only. A clear calendar means only that no booking was recorded; never promise physical availability. "Availability unknown" is not a free slot: do not generate a proposal for an unknown room. For a date outside the checked window, you may show a tentative proposal, since the booking service checks that exact time before accepting the request. Only rooms in the manifest may be proposed; general classrooms are deferred.
 
 RESPONSE FORMAT:
 - For booking proposals, include the following JSON block in your response wrapped in ```booking_proposal``` markers:
@@ -92,6 +102,9 @@ The user is asking a general computer science or academic question that is NOT s
 
 IMPORTANT: At the end of your response, append this disclaimer on a new line:
 > *This is general academic knowledge and is not specific to BITS Pilani CSIS department policies or curriculum.*
+
+CRITICAL RULE:
+- If the user asks about ANY specific person (like a professor), room number, local campus detail, or department specific information, you MUST state that you do not know. DO NOT hallucinate or guess any room numbers, contact info, or local BITS Pilani information.
 
 Format your response using Markdown for readability (tables, bold, lists, code blocks with syntax highlighting as appropriate).
 
@@ -143,4 +156,3 @@ Assistant: Yes, Room 214 is available tomorrow from 2:00 PM to 4:00 PM...
 
 User message: {user_message}
 Assistant response: {assistant_response}"""
-

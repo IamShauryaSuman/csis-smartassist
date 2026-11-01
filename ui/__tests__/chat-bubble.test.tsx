@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import ChatBubble from '../components/chat/chat-bubble';
-import { mockUserMessage, mockAssistantMessage, mockProposalMessage } from './fixtures';
+import { mockUserMessage, mockAssistantMessage } from './fixtures';
 import type { Message } from '@/lib/types';
 
 // ── Mock heavy dependencies ───────────────────────────────────────────────────
@@ -42,13 +42,6 @@ vi.mock('../components/chat/chat-bubble.module.scss', () => ({
     timestamp: 'timestamp',
     timestampUser: 'timestampUser',
   },
-}));
-
-// Mock BookingProposal (it's a complex component, we test it separately)
-vi.mock('../components/bookings/booking-proposal', () => ({
-  default: ({ payload }: { payload: any }) => (
-    <div data-testid="booking-proposal">{payload.room_name}</div>
-  ),
 }));
 
 describe('ChatBubble', () => {

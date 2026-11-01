@@ -6,15 +6,31 @@
  */
 
 import type {
+  AdminRole,
+  AdminRoleName,
+  AdminUser,
   Booking,
-  ChatResponse,
   ChatSession,
   DeltaResponse,
   Message,
   RagStats,
   Room,
   SyncResult,
+  UserAccess,
 } from "@/lib/types";
+
+interface ChatMetadata {
+  intent: string;
+  message_id?: string;
+  interactive_type: string | null;
+  interactive_payload: Record<string, unknown> | null;
+}
+
+type ChatStreamEvent =
+  | ({ type: "metadata" } & ChatMetadata)
+  | { type: "chunk"; text: string }
+  | { type: "error"; detail: string }
+  | { type: "done" };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -23,6 +39,25 @@ class APIClient {
 
   setToken(token: string): void {
     this.token = token;
+  }
+
+  async getPermissions(): Promise<UserAccess> {
+    return this.request<UserAccess>("/me/permissions");
+  }
+
+  async listAdminRoles(): Promise<AdminRole[]> {
+    return this.request<AdminRole[]>("/admin/roles");
+  }
+
+  async findAdminUser(email: string): Promise<AdminUser> {
+    return this.request<AdminUser>(`/admin/users?${new URLSearchParams({ email })}`);
+  }
+
+  async setUserRoles(userId: string, roles: AdminRoleName[]): Promise<Pick<AdminUser, "id" | "roles">> {
+    return this.request(`/admin/users/${userId}/roles`, {
+      method: "PUT",
+      body: JSON.stringify({ roles }),
+    });
   }
 
   private async request<T>(
@@ -95,9 +130,9 @@ class APIClient {
   async sendMessageStream(
     sessionId: string,
     message: string,
-    onMetadata: (meta: any) => void,
+    onMetadata: (meta: ChatMetadata) => void,
     onChunk: (text: string) => void,
-    onError: (err: any) => void
+    onError: (err: unknown) => void
   ): Promise<void> {
     const url = `${API_BASE}/api/chat/send`;
     const headers: Record<string, string> = {
@@ -143,19 +178,23 @@ class APIClient {
             const dataStr = block.substring(6).trim();
             if (!dataStr) continue;
             
+            let data: ChatStreamEvent;
             try {
-              const data = JSON.parse(dataStr);
-              if (data.type === "metadata") {
-                onMetadata(data);
-              } else if (data.type === "chunk") {
-                onChunk(data.text);
-              } else if (data.type === "error") {
-                onError(new Error(data.detail));
-              } else if (data.type === "done") {
-                // Finished stream
-              }
+              data = JSON.parse(dataStr);
             } catch (e) {
               console.error("Failed to parse SSE JSON:", e, "Data string:", dataStr);
+              continue;
+            }
+
+            if (data.type === "metadata") {
+              onMetadata(data);
+            } else if (data.type === "chunk") {
+              onChunk(data.text);
+            } else if (data.type === "error") {
+              onError(new Error(data.detail));
+              return;
+            } else if (data.type === "done") {
+              // Finished stream
             }
           }
         }
@@ -194,6 +233,8 @@ class APIClient {
     description?: string;
     start_time: string;
     end_time: string;
+    acknowledged_use?: boolean;
+    acknowledged_availability?: boolean;
   }): Promise<Booking> {
     return this.request<Booking>("/bookings", {
       method: "POST",
@@ -233,6 +274,8 @@ class APIClient {
       description?: string;
       start_time: string;
       end_time: string;
+      acknowledged_use?: boolean;
+      acknowledged_availability?: boolean;
     }
   ): Promise<Booking> {
     return this.request<Booking>(`/bookings/${bookingId}`, {

@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import BookingProposal from '../components/bookings/booking-proposal';
+import type { ComponentProps } from 'react';
 import { mockBooking } from './fixtures';
 
 const mockPayload = {
@@ -13,7 +14,7 @@ const mockPayload = {
 };
 
 describe('BookingProposal', () => {
-  let defaultProps: any;
+  let defaultProps: ComponentProps<typeof BookingProposal>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -37,6 +38,18 @@ describe('BookingProposal', () => {
     expect(screen.getByText('Submit Request')).toBeInTheDocument();
   });
 
+  it('shows draft times in IST regardless of browser time zone', () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'America/New_York';
+    try {
+      render(<BookingProposal {...defaultProps} />);
+      expect(screen.getByText(/11:00/)).toBeInTheDocument();
+      expect(screen.getByText(/12:00/)).toBeInTheDocument();
+    } finally {
+      process.env.TZ = originalTz;
+    }
+  });
+
   it('shows DRAFT PROPOSAL badge in draft state', () => {
     render(<BookingProposal {...defaultProps} />);
     expect(screen.getByText('DRAFT PROPOSAL')).toBeInTheDocument();
@@ -45,8 +58,14 @@ describe('BookingProposal', () => {
   it('calls onCreateBooking when Submit Request is clicked', async () => {
     render(<BookingProposal {...defaultProps} />);
 
+    const submit = screen.getByText('Submit Request');
+    expect(submit).toBeDisabled();
+    for (const checkbox of screen.getAllByRole('checkbox')) {
+      fireEvent.click(checkbox);
+    }
+
     await act(async () => {
-      fireEvent.click(screen.getByText('Submit Request'));
+      fireEvent.click(submit);
     });
 
     expect(defaultProps.onCreateBooking).toHaveBeenCalledWith(
@@ -55,6 +74,8 @@ describe('BookingProposal', () => {
         room_name: mockPayload.room_name,
         title: mockPayload.title,
         description: mockPayload.description,
+        acknowledged_use: true,
+        acknowledged_availability: true,
       })
     );
   });

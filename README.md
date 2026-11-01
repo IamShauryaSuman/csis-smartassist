@@ -67,6 +67,9 @@ For comprehensive, step-by-step setup instructions, including how to configure G
 
 ## 🧪 Testing
 
+Administrator responsibilities, migration/bootstrap steps, and permission tests
+are documented in [docs/MULTI_ADMIN.md](docs/MULTI_ADMIN.md).
+
 The repository maintains strict open-source engineering standards, backed by comprehensive automated test suites achieving >80% coverage.
 
 **Frontend (Vitest & React Testing Library):**

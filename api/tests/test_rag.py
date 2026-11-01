@@ -37,8 +37,9 @@ MOCK_DB_FILES = [
 
 @pytest.fixture
 def mock_admin_auth():
-    with patch("routes.rag._extract_user_id", return_value="admin-user"), \
-         patch("routes.rag._require_admin", return_value=None):
+    from core.auth import Access
+    with patch("core.auth.extract_user_id", return_value="admin-user"), \
+         patch("core.auth.get_access", return_value=Access("admin-user", ["knowledge_admin"], ["knowledge.manage"])):
         yield
 
 @pytest.fixture

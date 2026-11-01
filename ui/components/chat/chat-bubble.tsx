@@ -7,7 +7,7 @@
  * Uses react-markdown with remark-gfm for rich content rendering.
  */
 
-import { useState } from "react";
+import { useState, type ComponentPropsWithoutRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -24,7 +24,7 @@ interface ChatBubbleProps {
   userInitials?: string;
 }
 
-function CodeBlock({ node, className, children, ...props }: any) {
+function CodeBlock({ className, children }: ComponentPropsWithoutRef<"code">) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || "");
   const codeString = String(children).replace(/\n$/, "");
@@ -37,7 +37,7 @@ function CodeBlock({ node, className, children, ...props }: any) {
 
   if (!match) {
     return (
-      <code className={className} style={{ fontFamily: "var(--font-jetbrains-mono), 'JetBrains Mono', monospace" }} {...props}>
+      <code className={className} style={{ fontFamily: "var(--font-jetbrains-mono), 'JetBrains Mono', monospace" }}>
         {children}
       </code>
     );
@@ -54,7 +54,7 @@ function CodeBlock({ node, className, children, ...props }: any) {
       </div>
       <div className={styles.codeBlockContent}>
         <SyntaxHighlighter
-          style={materialDark as any}
+          style={materialDark}
           language={match[1]}
           PreTag="div"
           customStyle={{ 
@@ -66,7 +66,6 @@ function CodeBlock({ node, className, children, ...props }: any) {
             fontSize: "0.875rem" 
           }}
           codeTagProps={{ style: { fontFamily: "inherit" } }}
-          {...props}
         >
           {codeString}
         </SyntaxHighlighter>

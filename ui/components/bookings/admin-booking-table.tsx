@@ -55,6 +55,7 @@ export default function AdminBookingTable({ userId }: AdminBookingTableProps) {
   const formatDateTime = (iso: string) => {
     try {
       return new Date(iso).toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
         month: "short",
         day: "numeric",
         hour: "2-digit",

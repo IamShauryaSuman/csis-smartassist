@@ -1,13 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useParams, useSearchParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/hooks/useAuth";
 import { useProfile } from "@/lib/hooks/useProfile";
 import { useChat } from "@/lib/hooks/useChat";
 import { useBookings } from "@/lib/hooks/useBookings";
 import { ArrowDown } from "lucide-react";
-import { api } from "@/lib/api";
 import dynamic from "next/dynamic";
 const PolyhedronCanvas = dynamic(
   () => import("@/components/layout/polyhedron-canvas"),
@@ -24,7 +23,6 @@ const processedSessions = new Set<string>();
 export default function ChatSessionPage() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const router = useRouter();
   const sessionId = Array.isArray(params?.id) ? params.id[0] : params?.id || null;
 
   const { user } = useAuth();
@@ -37,10 +35,10 @@ export default function ChatSessionPage() {
   const messagesSentThisSession = useRef(0);
 
   // Intercept sendMessage to track if user sent anything during this component mount
-  const handleSendMessage = async (content: string) => {
+  const handleSendMessage = useCallback(async (content: string) => {
     messagesSentThisSession.current += 1;
     await sendMessage(content);
-  };
+  }, [sendMessage]);
 
   useEffect(() => {
     const q = searchParams?.get("q");
@@ -54,7 +52,7 @@ export default function ChatSessionPage() {
       
       handleSendMessage(q);
     }
-  }, [sessionId, searchParams, router]);
+  }, [sessionId, searchParams, handleSendMessage]);
 
   useEffect(() => {
     if (user?.id) {

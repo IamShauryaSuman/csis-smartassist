@@ -9,7 +9,7 @@ import styles from "./page.module.scss";
 
 // We need an inner component to consume the context
 function ChatLayoutInner({ children }: { children: React.ReactNode }) {
-  const { sessions, createSession, deleteSession, renameSession, pinSession } = useChatContext();
+  const { sessions, deleteSession, renameSession, pinSession } = useChatContext();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const router = useRouter();
   const params = useParams();

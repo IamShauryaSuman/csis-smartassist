@@ -16,6 +16,17 @@ interface ChatInputProps {
   placeholder?: string;
 }
 
+interface SpeechRecognition {
+  continuous: boolean;
+  interimResults: boolean;
+  onstart: () => void;
+  onend: () => void;
+  onresult: (event: { results: SpeechRecognitionResultList }) => void;
+  onerror: (event: { error: string }) => void;
+  start: () => void;
+  stop: () => void;
+}
+
 function SendIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -44,7 +55,7 @@ export default function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isMicActive, setIsMicActive] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -57,7 +68,11 @@ export default function ChatInput({
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      const speechWindow = window as Window & {
+        SpeechRecognition?: new () => SpeechRecognition;
+        webkitSpeechRecognition?: new () => SpeechRecognition;
+      };
+      const SpeechRecognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
       if (SpeechRecognition) {
         recognitionRef.current = new SpeechRecognition();
         recognitionRef.current.continuous = true;
@@ -67,7 +82,7 @@ export default function ChatInput({
           setIsCapturing(true);
         };
         
-        recognitionRef.current.onresult = (event: any) => {
+        recognitionRef.current.onresult = (event) => {
           let transcript = "";
           for (let i = 0; i < event.results.length; i++) {
             transcript += event.results[i][0].transcript;
@@ -75,7 +90,7 @@ export default function ChatInput({
           setValue(transcript);
         };
 
-        recognitionRef.current.onerror = (event: any) => {
+        recognitionRef.current.onerror = (event) => {
           console.error("Speech recognition error", event.error);
           setIsMicActive(false);
           setIsCapturing(false);
