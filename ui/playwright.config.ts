@@ -19,8 +19,13 @@ export default defineConfig({
   ],
   webServer: {
     command: 'npm run dev',
+    env: {
+      ...process.env,
+      LOCAL_AUTH: 'true',
+      NEXT_PUBLIC_LOCAL_AUTH: 'true',
+    },
     url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120 * 1000,
   },
 });
