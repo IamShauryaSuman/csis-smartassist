@@ -123,3 +123,33 @@ async def test_generate_title_primary_groq(hybrid_client, mock_groq, mock_gemini
     assert response == "Chat Title"
     mock_groq.generate.assert_called_once()
     mock_gemini.generate.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_ollama_llm_swapping():
+    """Test that setting llm_provider='ollama' routes calls to Ollama."""
+    with patch("services.llm.hybrid.get_settings") as mock_settings, \
+         patch("services.llm.hybrid.GeminiClient") as mock_gemini_cls, \
+         patch("services.llm.hybrid.OpenAICompatibleClient") as mock_openai_cls, \
+         patch("services.llm.hybrid.OllamaClient") as mock_ollama_cls:
+
+        mock_settings.return_value = MagicMock(
+            llm_provider="ollama",
+            embedding_provider="ollama",
+            groq_api_key="",
+            groq_model="llama-3.3-70b-versatile",
+            openrouter_api_key="",
+            openrouter_model="meta-llama/llama-3.3-70b-instruct:free",
+        )
+        mock_ollama_instance = AsyncMock()
+        mock_ollama_instance.generate.return_value = "Ollama response"
+        mock_ollama_instance.embed.return_value = [0.1, 0.2, 0.3]
+        mock_ollama_cls.return_value = mock_ollama_instance
+
+        client = HybridLLMClient()
+        res = await client.generate("Hello local model")
+        assert res == "Ollama response"
+        mock_ollama_instance.generate.assert_called_once()
+
+        emb = await client.embed("test doc")
+        assert emb == [0.1, 0.2, 0.3]
+        mock_ollama_instance.embed.assert_called_once()

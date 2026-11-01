@@ -671,8 +671,14 @@ async def _retrieve_rag_chunks(
         logger.warning("Primary RAG vector retrieval failed (%s). Attempting keyword fallback.", e)
         try:
             # Fall back to keyword ILIKE search in rag_chunks
-            stopwords = {"what", "when", "where", "which", "who", "whom", "this", "that", "there", "about", "tell", "give", "know", "does", "have"}
+            stopwords = {
+                "what", "when", "where", "which", "who", "whom", "this", "that", "there",
+                "about", "tell", "give", "know", "does", "have", "with", "from", "prof",
+                "professor", "chamber", "room", "number", "email", "office"
+            }
             keywords = [w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", search_query) if w.lower() not in stopwords]
+            if not keywords:
+                keywords = [w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", search_query)]
             if keywords:
                 term = keywords[0]
                 kw_matches = db.table("rag_chunks").select("id, file_id, content, rag_files(name)").ilike("content", f"%{term}%").limit(5).execute()
@@ -719,7 +725,10 @@ async def _handle_department_query(
         rag_context=rag_context,
     )
 
-    full_prompt = f"Conversation history:\n{conversation_context}\n\nCurrent question: {user_message}"
+    if conversation_context.strip():
+        full_prompt = f"Previous conversation for context:\n{conversation_context}\n\n---\n\nCurrent question: {user_message}"
+    else:
+        full_prompt = f"Current question: {user_message}"
     return await llm.generate(full_prompt, system_prompt=system_prompt)
 
 
@@ -749,7 +758,10 @@ async def _handle_department_query_stream(
         rag_context=rag_context,
     )
 
-    full_prompt = f"Conversation history:\n{conversation_context}\n\nCurrent question: {user_message}"
+    if conversation_context.strip():
+        full_prompt = f"Previous conversation for context:\n{conversation_context}\n\n---\n\nCurrent question: {user_message}"
+    else:
+        full_prompt = f"Current question: {user_message}"
     async for chunk in llm.generate_stream(full_prompt, system_prompt=system_prompt):
         yield chunk
 

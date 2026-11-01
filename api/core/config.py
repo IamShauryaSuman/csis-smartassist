@@ -91,9 +91,11 @@ class Settings(BaseSettings):
     embedding_provider: str = "gemini"  # Options: gemini, ollama
 
     # ── Ollama Local Setup ──────────────────────────────────────────────────
-    ollama_base_url: str = "http://localhost:11434/v1"
-    ollama_model: str = "qwen2.5:7b"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3:8b"
+    ollama_fast_model: str = "llama3:8b"
     ollama_embedding_model: str = "nomic-embed-text"
+    embedding_dimension: int = 768
 
     @property
     def google_service_account_info(self) -> dict[str, Any]:

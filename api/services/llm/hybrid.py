@@ -14,13 +14,14 @@ from functools import lru_cache
 from core.config import get_settings
 from services.llm.base import BaseLLMClient
 from services.llm.gemini import GeminiClient
+from services.llm.ollama import OllamaClient
 from services.llm.openai import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
 
 
 class HybridLLMClient(BaseLLMClient):
-    """Hybrid client that manages fallback between Gemini, Groq, and OpenRouter."""
+    """Hybrid client that manages fallback between Gemini, Groq, OpenRouter, and Ollama."""
 
     def __init__(self):
         settings = get_settings()
@@ -42,20 +43,14 @@ class HybridLLMClient(BaseLLMClient):
         self.embedding_provider = settings.embedding_provider
 
         # Initialize local Ollama providers if configured
-        self.ollama_llm = None
-        self.ollama_embed = None
-        
+        self.ollama = None
         if self.llm_provider == "ollama" or self.embedding_provider == "ollama":
-            self.ollama_llm = OpenAICompatibleClient(
-                api_key="ollama",
-                base_url=settings.ollama_base_url,
-                default_model=settings.ollama_model,
-            )
-            self.ollama_embed = OpenAICompatibleClient(
-                api_key="ollama",
-                base_url=settings.ollama_base_url,
-                default_model=settings.ollama_embedding_model,
-            )
+            self.ollama = OllamaClient()
+            self.ollama_llm = self.ollama
+            self.ollama_embed = self.ollama
+        else:
+            self.ollama_llm = None
+            self.ollama_embed = None
 
     async def _execute_with_fallback(self, method_name: str, chain: list[BaseLLMClient], *args, **kwargs):
         """Execute a method across a chain of clients, falling back on error."""
