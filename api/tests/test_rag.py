@@ -23,6 +23,7 @@ MOCK_DB_FILES = [
         "name": "Syllabus.pdf",
         "mime_type": "application/pdf",
         "md5_checksum": "old-checksum", # Modified
+        "index_complete": True,
         "updated_at": "2026-07-15T00:00:00Z"
     },
     {
@@ -31,6 +32,7 @@ MOCK_DB_FILES = [
         "name": "OldFile.txt",
         "mime_type": "text/plain",
         "md5_checksum": "checksum3", # Deleted from drive
+        "index_complete": True,
         "updated_at": "2026-07-15T00:00:00Z"
     }
 ]
@@ -76,25 +78,9 @@ def test_get_rag_delta(client, mock_admin_auth, mock_rag_supabase):
         assert data["deleted"][0]["gdrive_id"] == "drive-file-3"
 
 def test_sync_single_file(client, mock_admin_auth, mock_rag_supabase):
-    class SyncMockTable:
-        def __init__(self, name):
-            self.name = name
-            self.data = []
-        def select(self, *args, **kwargs): return self
-        def eq(self, *args, **kwargs): return self
-        def delete(self, *args, **kwargs): return self
-        def insert(self, data, *args, **kwargs): 
-            self.data = data if isinstance(data, list) else [data]
-            self._inserted = True
-            return self
-        def execute(self):
-            # For select, return empty to simulate no existing record
-            if self.name == "rag_files" and not hasattr(self, "_inserted"):
-                return MagicMock(data=[])
-            # For insert, return the inserted data with a fake ID
-            return MagicMock(data=[{**d, "id": f"new-id-{i}"} for i, d in enumerate(self.data)])
-
-    mock_rag_supabase.return_value.table = lambda name: SyncMockTable(name)
+    db = mock_rag_supabase.return_value
+    db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+    db.rpc.return_value.execute.return_value.data = "new-id"
 
     with patch("routes.rag._list_drive_files", return_value=MOCK_DRIVE_FILES), \
          patch("routes.rag._download_file_content", return_value="This is some content. " * 50), \
@@ -122,7 +108,8 @@ def test_delete_rag_file(client, mock_admin_auth, mock_rag_supabase):
         
     mock_rag_supabase.return_value.table = lambda name: DeleteMockTable()
     
-    response = client.delete("/api/rag/file?gdrive_id=drive-file-1", headers={"Authorization": "Bearer token"})
+    with patch("routes.rag._list_drive_files", return_value=[]):
+        response = client.delete("/api/rag/file?gdrive_id=drive-file-1", headers={"Authorization": "Bearer token"})
     
     assert response.status_code == 200
     assert response.json()["status"] == "deleted"
@@ -151,3 +138,61 @@ def test_get_rag_stats(client, mock_admin_auth, mock_rag_supabase):
     assert data["total_files"] == 2
     assert data["total_chunks"] == 42
     assert len(data["files"]) == 2
+
+
+def test_missing_folder_blocks_scan_and_stale_deletion(client, mock_admin_auth, mock_rag_supabase):
+    from types import SimpleNamespace
+    headers = {"Authorization": "Bearer token"}
+    with patch("routes.rag.get_settings", return_value=SimpleNamespace(google_drive_folder_id="")):
+        assert client.get("/api/rag/delta", headers=headers).status_code == 503
+        assert client.delete("/api/rag/file?gdrive_id=old", headers=headers).status_code == 503
+    mock_rag_supabase.return_value.table.return_value.delete.assert_not_called()
+
+
+def test_native_document_changes_are_detected(client, mock_admin_auth, mock_rag_supabase):
+    from types import SimpleNamespace
+    db = mock_rag_supabase.return_value
+    stored = {"index_complete": True, "gdrive_id": "doc", "name": "Syllabus", "md5_checksum": ""}
+    db.table.return_value.select.return_value.execute.return_value.data = [stored]
+    files = MagicMock()
+    files.get.return_value.execute.return_value = {"mimeType": "application/vnd.google-apps.folder"}
+    files.list.return_value.execute.return_value = {"files": [{
+        "id": "doc", "name": "Syllabus", "mimeType": "application/vnd.google-apps.document", "version": "12",
+    }]}
+    with patch("routes.rag.get_settings", return_value=SimpleNamespace(google_drive_folder_id="folder")), \
+         patch("routes.rag._get_drive_service") as service:
+        service.return_value.files.return_value = files
+        def scan():
+            response = client.get("/api/rag/delta", headers={"Authorization": "Bearer token"})
+            assert response.status_code == 200
+            return response.json()["modified"]
+        assert scan()[0]["md5_checksum"] == "version:12"
+        stored["md5_checksum"] = "version:12"
+        assert scan() == []
+        files.list.return_value.execute.return_value["files"][0]["version"] = "13"
+        assert scan()[0]["md5_checksum"] == "version:13"
+
+
+def test_partial_embedding_failure_does_not_publish(client, mock_admin_auth, mock_rag_supabase):
+    db = mock_rag_supabase.return_value
+    db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [{"md5_checksum": "old"}]
+    with patch("routes.rag._list_drive_files", return_value=MOCK_DRIVE_FILES), \
+         patch("routes.rag._download_file_content", return_value="document"), \
+         patch("routes.rag._chunk_text", return_value=["first", "second"]), \
+         patch("routes.rag.get_hybrid_client") as llm:
+        llm.return_value.embed = AsyncMock(side_effect=[[0.1] * 768, RuntimeError("offline")])
+        res = client.post("/api/rag/sync-file?gdrive_id=drive-file-1", headers={"Authorization": "Bearer token"})
+    assert res.status_code == 503
+    db.rpc.assert_not_called()
+    db.table.return_value.delete.assert_not_called()
+
+
+def test_legacy_partial_index_is_rescanned_even_with_matching_checksum(client, mock_admin_auth, mock_rag_supabase):
+    db = mock_rag_supabase.return_value
+    db.table.return_value.select.return_value.execute.return_value.data = [{
+        **MOCK_DRIVE_FILES[0], "index_complete": False,
+    }]
+    with patch("routes.rag._list_drive_files", return_value=[MOCK_DRIVE_FILES[0]]):
+        result = client.get("/api/rag/delta", headers={"Authorization": "Bearer token"})
+    assert result.status_code == 200
+    assert len(result.json()["modified"]) == 1

@@ -74,7 +74,9 @@ beforeAll(async () => {
     await db.query("INSERT INTO auth.users(id, email) VALUES ($1, $2)", [id, email]);
     await db.query("INSERT INTO public.profiles(id, email, is_admin) VALUES ($1, $2, $3)", [id, email, name === "legacy"]);
   }
-  await db.exec(await readFile(`${migrationDir}/008_multi_admin.sql`, "utf8"));
+  for (const name of migrations.filter(name => name >= "008")) {
+    await db.exec(await readFile(`${migrationDir}/${name}`, "utf8"));
+  }
   for (const id of [ids.user, ids.knowledge]) {
     await db.query(`
       INSERT INTO public.bookings(user_id, room_id, room_name, title, start_time, end_time)
@@ -212,5 +214,71 @@ describe("multi-admin migration and PostgreSQL policies", () => {
       "booking@goa.bits-pilani.ac.in", "combined@goa.bits-pilani.ac.in",
       "legacy@goa.bits-pilani.ac.in", "super@goa.bits-pilani.ac.in",
     ]);
+  });
+});
+
+describe("reservation and index transactions", () => {
+  const token = "00000000-0000-0000-0000-000000000123";
+  const create = async (who: string, room: string, title: string | null, start: string, end: string) => {
+    const result = await db.query<{ id: string }>(
+      "select id from create_pending_booking($1,$2,$2,$3,'',$4,$5,true,true)",
+      [who, room, title, start, end],
+    );
+    return result.rows[0].id;
+  };
+  const claim = (id: string) => db.query("select claim_booking_decision($1,$2,true)", [id, token]);
+
+  it("reserves across booking IDs, permits adjacent slots, and resumes only the reserved booking", async () => {
+    const times = ["2031-04-01T10:00Z", "2031-04-01T11:00Z", "2031-04-01T12:00Z"];
+    const first = await create(ids.user, "lab", "First", times[0], times[1]);
+    const second = await create(ids.booking, "lab", "Second", times[0], times[1]);
+    const next = await create(ids.knowledge, "lab", "Next", times[1], times[2]);
+    await claim(first);
+    await expect(claim(second)).rejects.toThrow(/already reserved/);
+    await expect(claim(first)).rejects.toThrow(/in progress/);
+    await claim(next);
+    await db.query("update bookings set approval_started_at=now()-interval '6 minutes' where id=$1", [first]);
+    await expect(claim(second)).rejects.toThrow(/already reserved/);
+    await claim(first);
+    await db.query("update bookings set status='approved',approval_token=null where id=$1", [first]);
+    await expect(claim(second)).rejects.toThrow(/already reserved/);
+  });
+
+  it("rolls back expiration on insert failure, and expires the original on success", async () => {
+    const args = ["2031-05-01T10:00Z", "2031-05-01T11:00Z"] as const;
+    const old = await create(ids.user, "lab", "Original", ...args);
+    const status = async () => (await db.query<{ status: string }>("select status from bookings where id=$1", [old])).rows[0].status;
+    await expect(create(ids.user, "lab", null, ...args)).rejects.toThrow();
+    expect(await status()).toBe("pending");
+    await create(ids.user, "lab", "Replacement", ...args);
+    expect(await status()).toBe("expired");
+  });
+
+  it("blocks live edit locks, then permits a decision when the lease expires", async () => {
+    const id = await create(ids.user, "lab", "Edited", "2031-06-01T10:00Z", "2031-06-01T11:00Z");
+    await db.query("update bookings set is_locked=true, locked_at=now() where id=$1", [id]);
+    await expect(claim(id)).rejects.toThrow(/being edited/);
+    await db.query("update bookings set locked_at=now()-interval '16 minutes' where id=$1", [id]);
+    await claim(id);
+    expect((await db.query("select is_locked from bookings where id=$1", [id])).rows[0]).toEqual({ is_locked: false });
+  });
+
+  it("keeps the previous revision and chunks after a failed or stale replacement", async () => {
+    const publish = (revision: string, previous: string | null, size: number) => db.query(
+      "select replace_rag_index('test-doc','doc','text/plain',$1,$2,$3)",
+      [revision, previous, JSON.stringify([{ content: revision, embedding: Array(size).fill(0.1) }])],
+    );
+    await publish("v1", null, 768);
+    await expect(publish("v2", "v1", 3)).rejects.toThrow();
+    await expect(publish("stale", null, 768)).rejects.toThrow(/changed during sync/);
+    const read = () => db.query("select md5_checksum,content from rag_files join rag_chunks on file_id=rag_files.id where gdrive_id='test-doc'");
+    expect((await read()).rows).toEqual([{ md5_checksum: "v1", content: "v1" }]);
+    await publish("v2", "v1", 768);
+    expect((await read()).rows).toEqual([{ md5_checksum: "v2", content: "v2" }]);
+    // A document deliberately emptied in Drive clears the previous searchable content.
+    await db.query("select replace_rag_index('test-doc','doc','text/plain','v3','v2','[]')");
+    expect((await read()).rows).toEqual([]);
+    expect((await db.query("select md5_checksum,index_complete from rag_files where gdrive_id='test-doc'")).rows)
+      .toEqual([{ md5_checksum: "v3", index_complete: true }]);
   });
 });

@@ -23,6 +23,8 @@ class MockTable:
         self._action = "update"
         return self
     def eq(self, *args, **kwargs): return self
+    def is_(self, *args): return self
+    def gt(self, *args): return self
     def order(self, *args, **kwargs): return self
     def single(self, *args, **kwargs):
         self._single = True
@@ -42,7 +44,13 @@ class MockTable:
 
 class MockSupabaseClient:
     def rpc(self, name, params):
-        return MagicMock(execute=lambda: MagicMock(data=[{"email": "admin@example.com"}]))
+        if name == "claim_booking_decision":
+            data = {"booking": FULL_MOCK_BOOKING, "recovering": False}
+        elif name == "create_pending_booking":
+            data = [FULL_MOCK_BOOKING]
+        else:
+            data = [{"email": "admin@example.com"}]
+        return MagicMock(execute=lambda: MagicMock(data=data))
 
     def table(self, name):
         return MockTable(name)
@@ -211,9 +219,7 @@ def test_update_booking_details_success(client, mock_supabase, mock_extract_user
     })
     
     assert response.status_code == 200
-    assert response.json()["is_locked"] == True # Wait, response returns data directly, but wait, the endpoint returns result.data[0] from update!
-    # With MockTable, update returns MagicMock(data=items) from execute.
-    # Since it's returning FULL_MOCK_BOOKING, we just check status 200.
+    assert response.json()["id"] == FULL_MOCK_BOOKING["id"]
 
 
 def test_create_booking_requires_acknowledgements(client, mock_supabase, mock_extract_user):
@@ -329,3 +335,28 @@ def test_multi_admin_notification_dispatch(client, mock_supabase, mock_extract_u
         assert response.status_code == 200
         # Check that background notification task was spawned
         assert mock_admin_notify.called
+
+
+def test_conflicting_reservation_never_creates_an_event(client, mock_supabase, mock_extract_user, mock_admin_check):
+    from postgrest.exceptions import APIError
+    error = APIError({"code": "P0001", "message": "Room already reserved for this time."})
+    with patch.object(mock_supabase, "rpc", side_effect=error), \
+         patch("routes.booking.create_calendar_event", new_callable=AsyncMock) as calendar:
+        result = client.patch("/api/bookings/b-1/status", headers={"Authorization": "Bearer token"},
+                              json={"status": "approved"})
+    assert result.status_code == 409
+    calendar.assert_not_awaited()
+
+
+def test_rejection_reconciles_event_after_uncertain_calendar_write(client, mock_supabase, mock_extract_user, mock_admin_check):
+    claim = MagicMock()
+    claim.execute.return_value.data = {"recovering": True, "booking": FULL_MOCK_BOOKING}
+    with patch.object(mock_supabase, "rpc", return_value=claim), \
+         patch("routes.booking.get_calendar_event_for_booking", new_callable=AsyncMock, return_value={"id": "event"}) as lookup, \
+         patch("routes.booking.delete_calendar_event", new_callable=AsyncMock) as remove, \
+         patch("routes.booking.send_booking_notification", new_callable=AsyncMock):
+        result = client.patch("/api/bookings/b-1/status", headers={"Authorization": "Bearer token"},
+                              json={"status": "rejected"})
+    assert result.status_code == 200
+    lookup.assert_awaited_once_with("r-1", "b-1")
+    remove.assert_awaited_once_with("r-1", "event")

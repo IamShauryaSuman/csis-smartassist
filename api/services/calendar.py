@@ -96,9 +96,11 @@ async def get_calendar_event_for_booking(room_id: str, booking_id: str) -> dict[
     try:
         event = _get_calendar_service().events().get(calendarId=cal_id, eventId=event_id).execute()
     except HttpError as exc:
-        if exc.resp.status == 404:
+        if exc.resp.status in (404, 410):
             return None
         raise
+    if event.get("status") == "cancelled":
+        return None
     private = event.get("extendedProperties", {}).get("private", {})
     if private.get("booking_id") == booking_id and private.get("room_id") == room_id:
         return event

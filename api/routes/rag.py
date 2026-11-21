@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from postgrest.exceptions import APIError
 
 from core.auth import require_permission
 from core.config import get_settings
@@ -91,9 +92,14 @@ def _list_drive_files() -> list[dict[str, str]]:
     """List all files in the configured Google Drive folder."""
     settings = get_settings()
     if not settings.google_drive_folder_id:
-        return []
+        raise HTTPException(status_code=503, detail="Google Drive folder is not configured.")
 
     service = _get_drive_service()
+    folder = service.files().get(
+        fileId=settings.google_drive_folder_id, fields="mimeType,trashed", supportsAllDrives=True,
+    ).execute()
+    if folder.get("trashed") or folder.get("mimeType") != "application/vnd.google-apps.folder":
+        raise HTTPException(status_code=503, detail="Configured Google Drive folder is unavailable.")
     files: list[dict[str, str]] = []
     page_token = None
 
@@ -102,19 +108,27 @@ def _list_drive_files() -> list[dict[str, str]]:
             service.files()
             .list(
                 q=f"'{settings.google_drive_folder_id}' in parents and trashed = false",
-                fields="nextPageToken, files(id, name, mimeType, md5Checksum)",
+                fields="nextPageToken,incompleteSearch,files(id,name,mimeType,md5Checksum,version)",
+                supportsAllDrives=True, includeItemsFromAllDrives=True,
                 pageToken=page_token,
                 pageSize=100,
             )
             .execute()
         )
 
+        if response.get("incompleteSearch"):
+            raise HTTPException(status_code=503, detail="Google Drive returned an incomplete file list.")
         for f in response.get("files", []):
+            if f["mimeType"] == "application/vnd.google-apps.folder":
+                continue
+            revision = f.get("md5Checksum") or (f"version:{f['version']}" if f.get("version") else "")
+            if not revision:
+                raise HTTPException(status_code=503, detail="Google Drive returned incomplete revision metadata.")
             files.append({
                 "gdrive_id": f["id"],
                 "name": f["name"],
                 "mime_type": f["mimeType"],
-                "md5_checksum": f.get("md5Checksum", ""),
+                "md5_checksum": revision,
             })
 
         page_token = response.get("nextPageToken")
@@ -161,9 +175,7 @@ def _download_file_content(gdrive_id: str, mime_type: str) -> str:
                         text += extracted + "\\n\\n"
                 return text
             except Exception as e:
-                import logging
-                logging.getLogger(__name__).error("Failed to parse PDF", exc_info=True)
-                return ""
+                raise HTTPException(status_code=422, detail="Could not extract text from PDF.") from e
 
         # Attempt UTF-8 decode for other raw formats
         try:
@@ -251,7 +263,7 @@ async def get_rag_delta():
     """
     db = get_supabase_client()
     # Get current DB state
-    db_files = db.table("rag_files").select("gdrive_id, md5_checksum, name").execute()
+    db_files = db.table("rag_files").select("gdrive_id, md5_checksum, name, index_complete").execute()
     db_map: dict[str, dict] = {f["gdrive_id"]: f for f in (db_files.data or [])}
 
     # Get current Drive state
@@ -266,7 +278,8 @@ async def get_rag_delta():
     for gdrive_id, drive_file in drive_map.items():
         if gdrive_id not in db_map:
             new_files.append(FileDelta(**drive_file, operation="new"))
-        elif drive_file["md5_checksum"] != db_map[gdrive_id]["md5_checksum"]:
+        elif (not db_map[gdrive_id]["index_complete"]
+              or drive_file["md5_checksum"] != db_map[gdrive_id]["md5_checksum"]):
             modified_files.append(FileDelta(**drive_file, operation="modified"))
 
     # Find deleted files
@@ -297,11 +310,14 @@ async def sync_single_file(
 ):
     """Process a single file: download, extract, chunk, embed, and store.
 
-    Called by the frontend in a loop for each file in the delta,
-    maintaining an O(1) memory footprint per request.
+    Stage one document at a time and publish all chunks in a single transaction.
     """
     db = get_supabase_client()
     llm = get_hybrid_client()
+
+    existing = (db.table("rag_files").select("md5_checksum")
+                .eq("gdrive_id", gdrive_id).execute().data)
+    expected_revision = existing[0]["md5_checksum"] if existing else None
 
     # Get file metadata from Drive
     drive_files = _list_drive_files()
@@ -316,68 +332,34 @@ async def sync_single_file(
 
     # Download and extract text content
     text_content = _download_file_content(gdrive_id, target_file["mime_type"])
-    if not text_content.strip():
-        return SyncResult(
-            file_id="",
-            gdrive_id=gdrive_id,
-            name=target_file["name"],
-            chunks_created=0,
-            status="empty_file",
-        )
+    chunks = []
+    try:
+        for content in _chunk_text(text_content):
+            embedding = await llm.embed(content)
+            if len(embedding) != 768:
+                raise ValueError("Embedding must have 768 dimensions.")
+            chunks.append({"content": content, "embedding": embedding})
+    except Exception as exc:
+        logger.exception("Could not embed file %s", gdrive_id)
+        raise HTTPException(status_code=503, detail="Embedding failed. Retry the sync.") from exc
 
-    # Delete existing record if re-syncing a modified file
-    existing = (
-        db.table("rag_files")
-        .select("id")
-        .eq("gdrive_id", gdrive_id)
-        .execute()
-    )
-    if existing.data:
-        # CASCADE delete removes associated chunks automatically
-        db.table("rag_files").delete().eq("gdrive_id", gdrive_id).execute()
-
-    # Insert new file record
-    file_record = (
-        db.table("rag_files")
-        .insert({
-            "gdrive_id": target_file["gdrive_id"],
-            "name": target_file["name"],
-            "mime_type": target_file["mime_type"],
-            "md5_checksum": target_file["md5_checksum"],
-        })
-        .execute()
-    )
-    file_id = file_record.data[0]["id"]
-
-    # Chunk the text
-    chunks = _chunk_text(text_content)
-
-    # Embed and store each chunk
-    chunks_created = 0
-    for chunk_text in chunks:
-        try:
-            embedding = await llm.embed(chunk_text)
-            db.table("rag_chunks").insert({
-                "file_id": file_id,
-                "content": chunk_text,
-                "embedding": embedding,
-            }).execute()
-            chunks_created += 1
-        except Exception:
-            logger.exception(
-                "Failed to embed chunk for file %s", target_file["name"]
-            )
-
-    logger.info(
-        "Synced file '%s': %d chunks created", target_file["name"], chunks_created
-    )
+    try:
+        file_id = db.rpc("replace_rag_index", {
+            "drive_id": gdrive_id, "file_name": target_file["name"],
+            "file_mime": target_file["mime_type"], "revision": target_file["md5_checksum"],
+            "expected_revision": expected_revision, "chunks": chunks,
+        }).execute().data
+    except APIError as exc:
+        if exc.code == "40001":
+            raise HTTPException(status_code=409, detail=exc.message) from exc
+        raise
 
     return SyncResult(
         file_id=file_id,
         gdrive_id=gdrive_id,
         name=target_file["name"],
-        chunks_created=chunks_created,
-        status="synced",
+        chunks_created=len(chunks),
+        status="synced" if chunks else "empty_file",
     )
 
 
@@ -386,6 +368,8 @@ async def delete_rag_file(
     gdrive_id: str = Query(..., description="Google Drive file ID to remove"),
 ):
     """Remove a file and all its chunks from the RAG index."""
+    if any(f["gdrive_id"] == gdrive_id for f in _list_drive_files()):
+        raise HTTPException(status_code=409, detail="File is still present in the Drive folder. Scan again.")
     db = get_supabase_client()
     result = db.table("rag_files").delete().eq("gdrive_id", gdrive_id).execute()
 

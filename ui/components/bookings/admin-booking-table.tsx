@@ -20,8 +20,20 @@ interface AdminBookingTableProps {
 type StatusFilter = "all" | "pending" | "approved" | "rejected";
 
 export default function AdminBookingTable({ userId }: AdminBookingTableProps) {
-  const { bookings, loading, loadBookings, updateBookingStatus } =
+  const { bookings, loading, loadBookings, updateBookingStatus, unlockBooking } =
     useBookings(userId);
+  const [now, setNow] = useState(Date.now);
+  // An open admin table must re-enable decisions without a page refresh.
+  useEffect(() => {
+    const expirations = bookings
+      .filter(booking => booking.is_locked && booking.locked_at)
+      .map(booking => Date.parse(booking.locked_at!) + 15 * 60_000)
+      .filter(expiration => expiration > now);
+    if (!expirations.length) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, Math.min(...expirations) - Date.now()));
+    return () => clearTimeout(timer);
+  }, [bookings, now]);
+  const [error, setError] = useState("");
   const [filter, setFilter] = useState<StatusFilter>("pending");
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [processing, setProcessing] = useState<string | null>(null);
@@ -34,9 +46,14 @@ export default function AdminBookingTable({ userId }: AdminBookingTableProps) {
   }, [filter, loadBookings]);
 
   const handleAction = useCallback(
-    async (bookingId: string, status: "approved" | "rejected") => {
+    async (bookingId: string, status: "approved" | "rejected" | "unlock") => {
+      setError("");
       setProcessing(bookingId);
       try {
+        if (status === "unlock") {
+          await unlockBooking(bookingId);
+          return;
+        }
         await updateBookingStatus(bookingId, status, notes[bookingId] || "");
         setNotes((prev) => {
           const next = { ...prev };
@@ -44,12 +61,12 @@ export default function AdminBookingTable({ userId }: AdminBookingTableProps) {
           return next;
         });
       } catch (error) {
-        console.error("Failed to update booking:", error);
+        setError(error instanceof Error ? error.message : "Could not update booking.");
       } finally {
         setProcessing(null);
       }
     },
-    [updateBookingStatus, notes]
+    [unlockBooking, updateBookingStatus, notes]
   );
 
   const formatDateTime = (iso: string) => {
@@ -82,6 +99,7 @@ export default function AdminBookingTable({ userId }: AdminBookingTableProps) {
 
   return (
     <div>
+      {error && <p role="alert">{error}</p>}
       <div className={styles.filterBar}>
         {FILTERS.map((f) => (
           <button
@@ -154,10 +172,18 @@ export default function AdminBookingTable({ userId }: AdminBookingTableProps) {
                   <td>
                     {booking.status === "pending" ? (
                       <div className={styles.actions}>
-                        {booking.is_locked ? (
-                          <span className={styles.lockedIndicator} title="User is currently editing this booking">
-                            <Lock size={14} /> Locked for edit
-                          </span>
+                        {booking.is_locked && booking.locked_at && Date.parse(booking.locked_at) + 15 * 60_000 > now ? (
+                          <>
+                            <span className={styles.lockedIndicator} title="User is currently editing this booking">
+                              <Lock size={14} /> Locked for edit
+                            </span>
+                            <button
+                              disabled={processing === booking.id}
+                              onClick={() => handleAction(booking.id, "unlock")}
+                            >
+                              Unlock
+                            </button>
+                          </>
                         ) : (
                           <>
                             <button

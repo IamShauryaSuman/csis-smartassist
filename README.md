@@ -41,9 +41,9 @@ To run this project locally, you will need Node.js (for the frontend), Python 3.
 
 ### 1. Database Setup
 ```bash
-docker compose up -d
+npx supabase@2.78.1 start
 ```
-This spins up a complete, local Supabase environment (Postgres + Auth + Storage).
+This starts the local Supabase API, Auth, Storage and Postgres in Docker and applies the repository migrations. For SQL-only development, `docker compose up -d --wait` starts a separate Supabase Postgres database on port 5432.
 
 ### 2. Backend (FastAPI)
 ```bash

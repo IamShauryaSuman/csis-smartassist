@@ -32,3 +32,7 @@ coverage.xml
 # Local development tools
 .tools/
 .npm-cache/
+
+supabase/.temp/
+supabase/.branches/
+!scripts/init-local-db.sh

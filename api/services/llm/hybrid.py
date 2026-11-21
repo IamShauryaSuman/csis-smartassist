@@ -95,25 +95,17 @@ class HybridLLMClient(BaseLLMClient):
             if provider_name == "OpenAICompatibleClient":
                 provider_name = "Groq" if "groq" in str(client._client.base_url) else "OpenRouter"
 
+            emitted = False
             try:
-                method = getattr(client, method_name)
-                # We start iterating the stream. If it connects successfully and yields the first chunk, 
-                # we consider it successful and yield all remaining chunks.
-                # If it fails before the first chunk (e.g. 429 rate limit), it will be caught here.
-                async for chunk in method(*args, **kwargs):
-                    yield chunk
-                return # Successfully streamed entirely, exit the fallback loop
-            except Exception as e:
-                err_msg = str(e).lower()
-                if i == len(chain) - 1:
-                    logger.error(f"All fallback providers exhausted for stream. Last error: {e}")
+                async for chunk in getattr(client, method_name)(*args, **kwargs):
+                    if chunk:
+                        emitted = True
+                        yield chunk
+                return
+            except Exception as exc:
+                if emitted or i == len(chain) - 1:
                     raise
-                if any(x in err_msg for x in ["429", "quota", "exhausted", "500", "502", "503", "timeout"]):
-                    logger.warning(f"Provider {provider_name} stream failed with {e}. Falling back...")
-                    continue
-                else:
-                    logger.warning(f"Provider {provider_name} stream failed with unexpected {e}. Falling back...")
-                    continue
+                logger.warning("Provider %s failed before streaming: %s", provider_name, exc)
 
     async def generate(
         self,

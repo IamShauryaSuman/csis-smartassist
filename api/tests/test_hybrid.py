@@ -153,3 +153,16 @@ async def test_ollama_llm_swapping():
         emb = await client.embed("test doc")
         assert emb == [0.1, 0.2, 0.3]
         mock_ollama_instance.embed.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_answer_never_restarts_on_another_provider(hybrid_client, mock_gemini, mock_groq):
+    async def interrupted(*args, **kwargs):
+        yield "First words"
+        raise RuntimeError("interrupted")
+    mock_gemini.generate_stream = interrupted
+    stream = hybrid_client.generate_stream("test")
+    assert await anext(stream) == "First words"
+    with pytest.raises(RuntimeError, match="interrupted"):
+        await anext(stream)
+    mock_groq.generate_stream.assert_not_called()

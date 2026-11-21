@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
+
+from postgrest.exceptions import APIError
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -121,41 +124,18 @@ async def create_booking(
     db = get_supabase_client()
 
     room, start, end = await _validate_booking_request(body)
-
-    # Expire any existing pending bookings for this user that overlap in time
-    # This ensures a user can reschedule by simply creating a new booking for the same slot.
-    overlapping = (
-        db.table("bookings")
-        .select("id, start_time, end_time")
-        .eq("user_id", user_id)
-        .eq("status", "pending")
-        .execute()
-    )
-    
-    for b in overlapping.data:
-        b_start = datetime.fromisoformat(b["start_time"])
-        b_end = datetime.fromisoformat(b["end_time"])
-        
-        # Overlap condition: max(start1, start2) < min(end1, end2)
-        if max(start, b_start) < min(end, b_end):
-            db.table("bookings").update({"status": "expired"}).eq("id", b["id"]).execute()
-
-    result = (
-        db.table("bookings")
-        .insert({
-            "user_id": user_id,
-            "room_id": body.room_id,
-            "room_name": room["name"],
-            "title": body.title,
-            "description": body.description,
-            "start_time": body.start_time,
-            "end_time": body.end_time,
-            "status": "pending",
-            "acknowledged_use": body.acknowledged_use,
-            "acknowledged_availability": body.acknowledged_availability,
-        })
-        .execute()
-    )
+    try:
+        result = db.rpc("create_pending_booking", {
+            "requester": user_id, "room_key": body.room_id, "room_label": room["name"],
+            "booking_title": body.title, "details": body.description,
+            "starts": start.isoformat(), "ends": end.isoformat(),
+            "accepted_use": body.acknowledged_use,
+            "accepted_availability": body.acknowledged_availability,
+        }).execute()
+    except APIError as exc:
+        if exc.code == "P0001":
+            raise HTTPException(status_code=409, detail=exc.message) from exc
+        raise
     booking_data = result.data[0]
 
     # Fetch requester name
@@ -282,7 +262,10 @@ async def lock_booking(
         "locked_at": datetime.now(timezone.utc).isoformat(),
         "locked_by": user_id,
     }
-    result = db.table("bookings").update(update_data).eq("id", booking_id).execute()
+    result = (db.table("bookings").update(update_data).eq("id", booking_id)
+              .eq("status", "pending").is_("approval_token", "null").execute())
+    if not result.data:
+        raise HTTPException(status_code=409, detail="Booking changed or is being decided.")
     return result.data[0]
 
 
@@ -356,7 +339,13 @@ async def update_booking_details(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     
-    result = db.table("bookings").update(update_data).eq("id", booking_id).execute()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+    result = (db.table("bookings").update(update_data).eq("id", booking_id)
+              .eq("status", "pending").is_("approval_token", "null")
+              .eq("is_locked", True).eq("locked_by", user_id)
+              .gt("locked_at", cutoff).execute())
+    if not result.data:
+        raise HTTPException(status_code=409, detail="Edit lock expired or booking changed. Reopen the editor.")
     return result.data[0]
 
 
@@ -380,30 +369,19 @@ async def update_booking_status(
             status_code=400, detail="Status must be 'approved' or 'rejected'."
         )
 
-    # Fetch the booking
-    booking_result = (
-        db.table("bookings")
-        .select("*")
-        .eq("id", booking_id)
-        .single()
-        .execute()
-    )
-    if not booking_result.data:
-        raise HTTPException(status_code=404, detail="Booking not found.")
-
-    booking = booking_result.data
-
-    if booking["status"] != "pending":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Booking already {booking['status']}. Cannot modify.",
-        )
-        
-    if booking.get("is_locked"):
-        raise HTTPException(
-            status_code=409,
-            detail="Booking is currently locked by the user for editing. Please try again later.",
-        )
+    token = str(uuid4())
+    try:
+        decision = db.rpc("claim_booking_decision", {
+            "booking_id": booking_id, "worker_token": token, "approving": body.status == "approved",
+        }).execute().data
+    except APIError as exc:
+        if exc.code == "P0002":
+            raise HTTPException(status_code=404, detail="Booking not found.") from exc
+        if exc.code == "P0001":
+            raise HTTPException(status_code=409, detail=exc.message) from exc
+        raise
+    booking = decision["booking"]
+    recovering = decision["recovering"]
 
     settings = get_settings()
     override_email = (getattr(settings, "notification_override_email", "") or "").strip("\"' \t\r\n")
@@ -437,66 +415,79 @@ async def update_booking_status(
         "status": body.status,
         "admin_notes": body.admin_notes,
     }
-    if body.status == "approved":
-        room = await get_room_by_id(booking["room_id"])
-        if not room:
-            raise HTTPException(status_code=400, detail="Booking room no longer exists.")
-        if room.get("booking_enabled") is False:
-            raise HTTPException(status_code=400, detail="This room is not open for booking.")
-        try:
-            start, end = parse_booking_times(booking["start_time"], booking["end_time"])
-            validate_classroom_hours(room, start, end)
-        except BookingPolicyNotConfigured as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except BookingPolicyError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not booking.get("acknowledged_use") or not booking.get("acknowledged_availability"):
-            raise HTTPException(status_code=400, detail="Booking acknowledgements are missing.")
-        try:
-            cal_event = await get_calendar_event_for_booking(booking["room_id"], booking_id)
-        except Exception:
-            logger.exception("Failed to inspect calendar event for booking %s", booking_id)
-            raise HTTPException(status_code=503, detail="Calendar could not be checked; booking remains pending.")
-        if not cal_event:
-            await _require_room_available(booking["room_id"], start, end)
+    # A timeout can occur after Google has created the event. Keep that
+    # slot reserved until a retry reconciles the deterministic event ID.
+    calendar_uncertain = recovering
+    try:
+        if body.status == "approved":
+            room = await get_room_by_id(booking["room_id"])
+            if not room:
+                raise HTTPException(status_code=400, detail="Booking room no longer exists.")
+            if room.get("booking_enabled") is False:
+                raise HTTPException(status_code=400, detail="This room is not open for booking.")
             try:
-                cal_event = await create_calendar_event(
-                    room_id=booking["room_id"],
-                    title=f"[{booking.get('room_name') or 'Booking'}] {booking['title']}",
-                    start_time=start,
-                    end_time=end,
-                    description=(
-                        f"Booked by: {requester_name} ({effective_recipient or requester_email})\n\n"
-                        f"Room: {booking.get('room_name') or booking['room_id']}\n"
-                        f"Description: {booking.get('description', '')}\n"
-                        f"Admin notes: {body.admin_notes or 'None'}"
-                    ),
-                    attendee_email=effective_recipient or requester_email,
-                    booking_id=booking_id,
-                )
+                start, end = parse_booking_times(booking["start_time"], booking["end_time"])
+                validate_classroom_hours(room, start, end)
+            except BookingPolicyNotConfigured as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except BookingPolicyError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if not booking.get("acknowledged_use") or not booking.get("acknowledged_availability"):
+                raise HTTPException(status_code=400, detail="Booking acknowledgements are missing.")
+            try:
+                cal_event = await get_calendar_event_for_booking(booking["room_id"], booking_id)
             except Exception:
-                logger.exception("Failed to create calendar event for booking %s", booking_id)
-                cal_event = None
-        if not cal_event or not isinstance(cal_event, dict) or not cal_event.get("id"):
-            raise HTTPException(status_code=503, detail="Calendar event could not be created; booking remains pending.")
-        update_data["calendar_event_id"] = cal_event["id"]
-        update_data["calendar_event_link"] = cal_event.get("htmlLink")
+                logger.exception("Failed to inspect calendar event for booking %s", booking_id)
+                raise HTTPException(status_code=503, detail="Calendar could not be checked; booking remains pending.")
+            if not cal_event:
+                calendar_uncertain = False
+                await _require_room_available(booking["room_id"], start, end)
+                calendar_uncertain = True
+                try:
+                    cal_event = await create_calendar_event(
+                        room_id=booking["room_id"],
+                        title=f"[{booking.get('room_name') or 'Booking'}] {booking['title']}",
+                        start_time=start,
+                        end_time=end,
+                        description=(
+                            f"Booked by: {requester_name} ({effective_recipient or requester_email})\n\n"
+                            f"Room: {booking.get('room_name') or booking['room_id']}\n"
+                            f"Description: {booking.get('description', '')}\n"
+                            f"Admin notes: {body.admin_notes or 'None'}"
+                        ),
+                        attendee_email=effective_recipient or requester_email,
+                        booking_id=booking_id,
+                    )
+                except Exception:
+                    logger.exception("Failed to create calendar event for booking %s", booking_id)
+                    cal_event = None
+            if not cal_event or not isinstance(cal_event, dict) or not cal_event.get("id"):
+                raise HTTPException(status_code=503, detail="Calendar event could not be created; booking remains pending.")
+            calendar_uncertain = True
+            update_data["calendar_event_id"] = cal_event["id"]
+            update_data["calendar_event_link"] = cal_event.get("htmlLink")
+        elif recovering:
+            event = await get_calendar_event_for_booking(booking["room_id"], booking_id)
+            if event:
+                await delete_calendar_event(booking["room_id"], event["id"])
+    except Exception as exc:
+        release = {"approval_started_at": None}
+        if not calendar_uncertain:
+            release["approval_token"] = None
+        db.table("bookings").update(release).eq("id", booking_id).eq("approval_token", token).execute()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=503, detail="Calendar reconciliation failed; retry this booking.") from exc
 
+    update_data.update(approval_token=None, approval_started_at=None)
     result = (
         db.table("bookings")
         .update(update_data)
         .eq("id", booking_id)
-        .eq("status", "pending")
+        .eq("approval_token", token)
         .execute()
     )
     if not result.data:
-        if body.status == "approved" and update_data.get("calendar_event_id"):
-            try:
-                current = db.table("bookings").select("status").eq("id", booking_id).single().execute()
-                if current.data and current.data.get("status") == "rejected":
-                    await delete_calendar_event(booking["room_id"], update_data["calendar_event_id"])
-            except Exception:
-                logger.exception("Could not reconcile calendar event for booking %s", booking_id)
         raise HTTPException(status_code=409, detail="Booking status changed during approval. Please refresh.")
     updated_booking = result.data[0]
 

@@ -1,24 +1,22 @@
-version: "3.9"
-
+# Standalone SQL development database. Use the Supabase CLI for the full API stack.
 services:
   postgres:
-    image: pgvector/pgvector:pg16
-    container_name: csis-smartassist-db
-    restart: unless-stopped
+    image: public.ecr.aws/supabase/postgres:17.6.1.143
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${SMARTASSIST_DB_PORT:-5432}:5432"
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: smartassist
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      POSTGRES_HOST: /var/run/postgresql
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./supabase/migrations:/docker-entrypoint-initdb.d
+      - supabase_pg17:/var/lib/postgresql/data
+      - ./supabase/migrations:/app-migrations:ro
+      - ./scripts/init-local-db.sh:/docker-entrypoint-initdb.d/zz-smartassist.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "PGPASSWORD=$$POSTGRES_PASSWORD psql -h localhost -U postgres -d postgres -Atc \"select to_regprocedure('public.claim_booking_decision(uuid,uuid,boolean)') is not null\" | grep -qx t"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 20
 
 volumes:
-  pgdata:
+  supabase_pg17:

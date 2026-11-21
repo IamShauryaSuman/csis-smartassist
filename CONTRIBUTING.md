@@ -44,7 +44,7 @@ We highly recommend using our Docker setup for local development. This ensures y
 
 2. **Start the Database Infrastructure:**
    ```bash
-   docker compose up -d
+   npx supabase@2.78.1 start
    ```
    *This spins up the Supabase stack locally on port 54321.*
 

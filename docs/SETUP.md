@@ -6,15 +6,17 @@ Welcome to the CSIS SmartAssist setup guide! This document outlines how to confi
 
 ## 1. Local Database Setup (Supabase)
 
-The easiest way to replicate our production database is using Docker. Our repository includes a `docker-compose.yml` file that spins up a local Supabase stack (Postgres + Auth + pgvector).
+Install Docker and Node.js 22 or later. From the repository root run:
 
-1. Install [Docker](https://docs.docker.com/get-docker/) on your system.
-2. From the root of the repository, run:
-   ```bash
-   docker compose up -d
-   ```
-3. Your local Postgres database is now accessible at `localhost:5432` and the Supabase API is running on `localhost:54321`.
-4. *Note: You will need to run the initial schema migrations (found in `supabase/migrations`) to create the `profiles`, `chat_sessions`, `messages`, and `rag_chunks` tables.*
+```bash
+npx supabase@2.78.1 start
+```
+
+The CLI starts the Docker services and applies the SQL files in `supabase/migrations` on first boot. The API listens on port 54321 and Postgres on 54322. Use `npx supabase@2.78.1 status` for local connection details. Existing development stacks can apply pending migrations with `npx supabase@2.78.1 migration up --local`.
+
+For SQL-only development, `docker compose up -d --wait` initializes a separate Supabase Postgres database on port 5432. Override the port with `SMARTASSIST_DB_PORT`. The PostgreSQL 17 database uses a new volume. Existing PostgreSQL 16 data can be moved using a logical dump and restore.
+
+Apply migration 009 to the target database before rolling out the updated API. It adds transactional document replacement and room reservations. Deploy all booking API workers together so each approval uses the reservation check. Run a knowledge-base scan and sync once after upgrading to repair files indexed by earlier versions.
 
 ---
 

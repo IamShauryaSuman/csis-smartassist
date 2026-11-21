@@ -15,6 +15,7 @@ import styles from "./rag-dashboard.module.scss";
 export default function RagDashboard() {
   const [stats, setStats] = useState<RagStats | null>(null);
   const [delta, setDelta] = useState<DeltaResponse | null>(null);
+  const [errorMessage, setErrorMessage] = useState("");
   const [scanning, setScanning] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState({ current: 0, total: 0 });
@@ -33,13 +34,14 @@ export default function RagDashboard() {
   }, []);
 
   const handleScan = useCallback(async () => {
+    setErrorMessage("");
     setScanning(true);
     setDelta(null);
     try {
       const data = await api.getRagDelta();
       setDelta(data);
     } catch (error) {
-      console.error("Failed to scan delta:", error);
+      setErrorMessage(error instanceof Error ? error.message : "Drive scan failed.");
     } finally {
       setScanning(false);
     }
@@ -54,6 +56,8 @@ export default function RagDashboard() {
 
     if (total === 0) return;
 
+    setErrorMessage("");
+    const failures: string[] = [];
     setSyncing(true);
     setSyncProgress({ current: 0, total });
 
@@ -61,9 +65,10 @@ export default function RagDashboard() {
     for (const file of filesToDelete) {
       try {
         await api.deleteRagFile(file.gdrive_id);
+      } catch {
+        failures.push(file.name);
+      } finally {
         setSyncProgress((prev) => ({ ...prev, current: prev.current + 1 }));
-      } catch (error) {
-        console.error(`Failed to delete ${file.name}:`, error);
       }
     }
 
@@ -71,13 +76,14 @@ export default function RagDashboard() {
     for (const file of filesToSync) {
       try {
         await api.syncFile(file.gdrive_id);
-        setSyncProgress((prev) => ({ ...prev, current: prev.current + 1 }));
-      } catch (error) {
-        console.error(`Failed to sync ${file.name}:`, error);
+      } catch {
+        failures.push(file.name);
+      } finally {
         setSyncProgress((prev) => ({ ...prev, current: prev.current + 1 }));
       }
     }
 
+    if (failures.length) setErrorMessage(`Could not sync: ${failures.join(", ")}. Scan again to retry.`);
     setSyncing(false);
     setDelta(null);
 
@@ -97,6 +103,7 @@ export default function RagDashboard() {
 
   return (
     <div className={styles.dashboard}>
+      {errorMessage && <p role="alert">{errorMessage}</p>}
       {/* Stats Overview */}
       <div className={styles.stats}>
         <div className={styles.statCard}>
