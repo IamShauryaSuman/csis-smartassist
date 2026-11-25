@@ -634,7 +634,7 @@ async def _retrieve_rag_chunks(
     search_query: str,
     user_message: str,
 ) -> list[dict]:
-    """Retrieve relevant chunks using vector search, with keyword fallback and graceful degradation."""
+    """Use keyword evidence when vector search misses or the user asks for a person."""
     chunks = []
     try:
         query_embedding = await llm.embed_query(search_query)
@@ -668,34 +668,79 @@ async def _retrieve_rag_chunks(
             except Exception as e:
                 logger.warning("Secondary RAG vector query failed: %s", e)
     except Exception as e:
-        logger.warning("Primary RAG vector retrieval failed (%s). Attempting keyword fallback.", e)
-        try:
-            # Fall back to keyword ILIKE search in rag_chunks
-            stopwords = {
-                "what", "when", "where", "which", "who", "whom", "this", "that", "there",
-                "about", "tell", "give", "know", "does", "have", "with", "from", "prof",
-                "professor", "chamber", "room", "number", "email", "office"
-            }
-            keywords = [w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", search_query) if w.lower() not in stopwords]
-            if not keywords:
-                keywords = [w for w in re.findall(r"\b[a-zA-Z0-9_-]{3,}\b", search_query)]
-            if keywords:
-                term = keywords[0]
-                kw_matches = db.table("rag_chunks").select("id, file_id, content, rag_files(name)").ilike("content", f"%{term}%").limit(5).execute()
-                for row in (kw_matches.data or []):
-                    file_info = row.get("rag_files") or {}
-                    file_name = file_info.get("name") if isinstance(file_info, dict) else "Document"
-                    chunks.append({
-                        "id": row.get("id"),
-                        "file_id": row.get("file_id"),
-                        "file_name": file_name,
-                        "content": row.get("content", ""),
-                        "similarity": 0.5,
-                    })
-        except Exception as kw_e:
-            logger.warning("Keyword RAG fallback failed: %s", kw_e)
+        logger.warning("Primary RAG vector retrieval failed: %s", e)
 
-    return chunks
+    person_lookup = bool(re.search(
+        r"^\s*who\s+(?:is|was)\b|\b(?:dr|prof|professor|ma['’]?am|mam|sir)\b",
+        user_message,
+        re.IGNORECASE,
+    ))
+    if chunks and not person_lookup:
+        return chunks
+
+    try:
+        keyword_matches = _retrieve_rag_keywords(db, user_message, search_query, person_lookup)
+    except Exception as error:
+        logger.warning("Keyword RAG retrieval failed: %s", error)
+        return chunks
+
+    matched_ids = {chunk["id"] for chunk in keyword_matches}
+    return (keyword_matches + [chunk for chunk in chunks if chunk["id"] not in matched_ids])[:12]
+
+
+def _retrieve_rag_keywords(db: Any, user_message: str, search_query: str, person_lookup: bool) -> list[dict]:
+    """Find literal words, preserving the user's wording for direct name lookups."""
+    stopwords = {
+        "what", "when", "where", "which", "who", "whom", "why", "how", "this", "that", "there",
+        "the", "and", "for", "are", "was", "can", "could", "would", "should", "any", "some", "again",
+        "about", "tell", "give", "know", "does", "have", "with", "from", "please", "their",
+        "she", "her", "his", "him", "they", "them", "prof", "professor", "maam", "mam", "sir",
+        "chamber", "room", "number", "email", "office", "contact", "information", "details",
+        "bits", "pilani", "goa", "csis", "department",
+    }
+    # Restrict the ILIKE filters to alphanumerics, then verify whole words in the matches.
+    user_words = [word for word in re.findall(r"[a-z0-9]{3,}", user_message.lower()) if word not in stopwords]
+    search_words = [word for word in re.findall(r"[a-z0-9]{3,}", search_query.lower()) if word not in stopwords]
+    primary_words, secondary_words = (user_words, search_words) if person_lookup else (search_words, user_words)
+    terms = list(dict.fromkeys(primary_words + secondary_words))[:6]
+    if not terms:
+        return []
+
+    rows = (
+        db.table("rag_chunks").select("id, file_id, content, rag_files(name)")
+        .or_(",".join(f"content.ilike.*{term}*" for term in terms))
+        .limit(24).execute().data or []
+    )
+    primary_terms = set(primary_words) & set(terms)
+    ranked = []
+    for row in rows:
+        words = set(re.findall(r"\w+", row["content"].lower()))
+        primary_matches = len(words & primary_terms)
+        total_matches = len(words.intersection(terms))
+        if not total_matches or (person_lookup and primary_terms and not primary_matches):
+            continue
+        file_name = (row.get("rag_files") or {}).get("name") or "Document"
+        score = (primary_matches, total_matches, person_lookup and "faculty" in file_name.lower())
+        ranked.append((score, {
+            "id": row["id"],
+            "file_id": row["file_id"],
+            "file_name": file_name,
+            "content": row["content"],
+            "similarity": None,
+        }))
+    ranked.sort(key=lambda result: result[0], reverse=True)
+    return [chunk for _, chunk in ranked[:5]]
+
+
+def _format_rag_context(chunks: list[dict]) -> str:
+    if not chunks:
+        return "(No relevant documents found in the knowledge base.)"
+    documents = []
+    for chunk in chunks:
+        similarity = chunk["similarity"]
+        match = "Keyword match" if similarity is None else f"Relevance: {similarity:.2f}"
+        documents.append(f"**Source: {chunk['file_name']}** ({match})\n{chunk['content']}")
+    return "\n\n---\n\n".join(documents)
 
 
 async def _handle_department_query(
@@ -711,18 +756,9 @@ async def _handle_department_query(
     search_query = await _condense_query_for_rag(llm, user_message, conversation_context)
     chunks = await _retrieve_rag_chunks(llm, db, search_query, user_message)
 
-    # Build RAG context
-    if chunks:
-        rag_context = "\n\n---\n\n".join(
-            f"**Source: {chunk['file_name']}** (Relevance: {chunk['similarity']:.2f})\n{chunk['content']}"
-            for chunk in chunks
-        )
-    else:
-        rag_context = "(No relevant documents found in the knowledge base.)"
-
     system_prompt = DEPARTMENT_RAG_SYSTEM_PROMPT.format(
         memory_context=memory_context,
-        rag_context=rag_context,
+        rag_context=_format_rag_context(chunks),
     )
 
     if conversation_context.strip():
@@ -745,17 +781,9 @@ async def _handle_department_query_stream(
     search_query = await _condense_query_for_rag(llm, user_message, conversation_context)
     chunks = await _retrieve_rag_chunks(llm, db, search_query, user_message)
 
-    if chunks:
-        rag_context = "\n\n---\n\n".join(
-            f"**Source: {chunk['file_name']}** (Relevance: {chunk['similarity']:.2f})\n{chunk['content']}"
-            for chunk in chunks
-        )
-    else:
-        rag_context = "(No relevant documents found in the knowledge base.)"
-
     system_prompt = DEPARTMENT_RAG_SYSTEM_PROMPT.format(
         memory_context=memory_context,
-        rag_context=rag_context,
+        rag_context=_format_rag_context(chunks),
     )
 
     if conversation_context.strip():

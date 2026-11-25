@@ -116,6 +116,94 @@ def test_chat_send_department_query_embedding_failure_fallback(client, chat_mock
     assert '"text": "Answer"' in text
     assert '"type": "done"' in text
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("question", ["who is neena maam", "who is neena"])
+async def test_department_stream_finds_faculty_when_vector_search_is_empty(question):
+    from routes.chat import _handle_department_query_stream
+
+    db = MagicMock()
+    db.rpc.return_value.execute.return_value.data = []
+    search = db.table.return_value.select.return_value.or_
+    search.return_value.limit.return_value.execute.return_value.data = [{
+        "id": "directory-chunk", "file_id": "directory", "content": "Neena Goveas Professor",
+        "rag_files": {"name": "Faculty directory.pdf"},
+    }]
+
+    async def stream(prompt, *, system_prompt):
+        assert question in prompt
+        assert "Faculty directory.pdf" in system_prompt
+        assert "Neena Goveas Professor" in system_prompt
+        yield "Neena Goveas"
+
+    llm = MagicMock(embed_query=AsyncMock(return_value=[0.1]), generate_stream=stream)
+    with patch("routes.chat.get_supabase_client", return_value=db):
+        answer = [chunk async for chunk in _handle_department_query_stream(llm, question, "", "")]
+    assert answer == ["Neena Goveas"]
+    search.assert_called_once_with("content.ilike.*neena*")
+
+
+@pytest.mark.asyncio
+async def test_faculty_keyword_evidence_prioritizes_exact_name_and_deduplicates():
+    from routes.chat import _retrieve_rag_chunks
+
+    directory = {"id": "directory", "file_id": "file1", "content": "Neena\nGoveas Professor"}
+    unrelated = {"id": "other", "file_id": "file2", "content": "Other department context",
+                 "file_name": "Context", "similarity": 0.7}
+    db = MagicMock()
+    db.rpc.return_value.execute.return_value.data = [
+        unrelated, {**directory, "file_name": "Faculty directory", "similarity": 0.4},
+    ]
+    search = db.table.return_value.select.return_value.or_
+    search.return_value.limit.return_value.execute.return_value.data = [
+        {"id": "substring", "file_id": "file3", "content": "Neenathan ",
+         "rag_files": {"name": "Wrong match"}},
+        {"id": "partial", "file_id": "file4", "content": "Neena Othername",
+         "rag_files": {"name": "Other"}},
+        {**directory, "rag_files": {"name": "Faculty directory"}},
+    ]
+
+    llm = MagicMock(embed_query=AsyncMock(return_value=[0.1]))
+    chunks = await _retrieve_rag_chunks(
+        llm, db, "Information about Neena Goveas from the CSIS department",
+        "Who is Prof. Neena Goveas?",
+    )
+
+    assert [chunk["id"] for chunk in chunks] == ["directory", "partial", "other"]
+    assert chunks[0]["similarity"] is None
+
+
+@pytest.mark.asyncio
+async def test_topic_search_preserves_vector_matches_without_extra_keyword_query():
+    from routes.chat import _retrieve_rag_chunks
+
+    chunk = {"id": "course", "content": "Machine learning prerequisites", "similarity": 0.7}
+    db = MagicMock()
+    db.rpc.return_value.execute.return_value.data = [chunk]
+    llm = MagicMock(embed_query=AsyncMock(return_value=[0.1]))
+    question = "What are the prerequisites for machine learning?"
+
+    assert await _retrieve_rag_chunks(llm, db, question, question) == [chunk]
+    db.table.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_keyword_search_uses_rewritten_subject_for_follow_up():
+    from routes.chat import _retrieve_rag_chunks
+
+    db = MagicMock()
+    db.rpc.return_value.execute.return_value.data = []
+    search = db.table.return_value.select.return_value.or_
+    search.return_value.limit.return_value.execute.return_value.data = [
+        {"id": "general", "file_id": "general", "content": "Courses that instructors teach."},
+        {"id": "specific", "file_id": "specific", "content": "Courses taught by Neena Goveas."},
+    ]
+    llm = MagicMock(embed_query=AsyncMock(return_value=[0.1]))
+    chunks = await _retrieve_rag_chunks(
+        llm, db, "What courses does Neena Goveas teach?", "What courses does she teach?",
+    )
+    assert [chunk["id"] for chunk in chunks] == ["specific", "general"]
+
 def test_chat_send_calendar_query(client, chat_mock_supabase, mock_gemini):
     # Mock DB queries
     s_mock = MagicMock(data={"id": SESSION_ID, "user_id": USER_ID, "title": "New Chat"})
