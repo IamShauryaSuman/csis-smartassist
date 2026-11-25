@@ -82,6 +82,46 @@ def test_chat_send_general_query(client, chat_mock_supabase, mock_gemini):
     assert '"text": "World"' in text
     assert '"type": "done"' in text
 
+
+@pytest.mark.parametrize("save_fails", [False, True])
+def test_chat_confirms_single_ordered_write(client, chat_mock_supabase, mock_gemini, save_fails):
+    table = chat_mock_supabase.table()
+    table.select().eq().single().execute.side_effect = [
+        MagicMock(data={"id": SESSION_ID, "user_id": USER_ID, "title": "Existing chat"}),
+        MagicMock(data={}),
+        MagicMock(data=[]),
+    ]
+    if save_fails:
+        table.insert.return_value.execute.side_effect = RuntimeError("database unavailable")
+
+    async def stream(*args, **kwargs):
+        yield "Reply"
+
+    mock_gemini.generate_json.return_value = {"intent": "general_query"}
+    mock_gemini.generate_stream = stream
+    with patch("routes.chat.get_hybrid_client", return_value=mock_gemini), \
+         patch("routes.chat._extract_user_id", return_value=USER_ID), \
+         patch("routes.chat._synthesize_memory_task", new_callable=AsyncMock):
+        response = client.post("/api/chat/send", headers={"Authorization": "Bearer token"}, json={
+            "session_id": SESSION_ID,
+            "message": "Prompt",
+        })
+
+    assert response.status_code == 200
+    table.insert.assert_called_once()
+    user, assistant = table.insert.call_args.args[0]
+    assert (user["role"], user["content"]) == ("user", "Prompt")
+    assert (assistant["role"], assistant["content"]) == ("assistant", "Reply")
+    from datetime import datetime
+    assert datetime.fromisoformat(user["created_at"]) < datetime.fromisoformat(assistant["created_at"])
+    if save_fails:
+        assert '"type": "error"' in response.text
+        assert "Could not confirm that the conversation was saved" in response.text
+        assert '"type": "done"' not in response.text
+        assert "database unavailable" not in response.text
+    else:
+        assert '"type": "done"' in response.text
+
 def test_chat_send_department_query_embedding_failure_fallback(client, chat_mock_supabase, mock_gemini):
     """Test that if embed_query fails (e.g. 403 Permission Denied), the stream still succeeds gracefully."""
     chat_mock_supabase.table().select().eq().single().execute.side_effect = [

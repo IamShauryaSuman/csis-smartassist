@@ -320,12 +320,7 @@ async def sync_single_file(
     expected_revision = existing[0]["md5_checksum"] if existing else None
 
     # Get file metadata from Drive
-    drive_files = _list_drive_files()
-    target_file = None
-    for f in drive_files:
-        if f["gdrive_id"] == gdrive_id:
-            target_file = f
-            break
+    target_file = next((f for f in _list_drive_files() if f["gdrive_id"] == gdrive_id), None)
 
     if not target_file:
         raise HTTPException(status_code=404, detail="File not found in Google Drive.")
@@ -342,6 +337,10 @@ async def sync_single_file(
     except Exception as exc:
         logger.exception("Could not embed file %s", gdrive_id)
         raise HTTPException(status_code=503, detail="Embedding failed. Retry the sync.") from exc
+
+    current_file = next((f for f in _list_drive_files() if f["gdrive_id"] == gdrive_id), None)
+    if current_file != target_file:
+        raise HTTPException(status_code=409, detail="Drive file changed during sync. Scan again.")
 
     try:
         file_id = db.rpc("replace_rag_index", {

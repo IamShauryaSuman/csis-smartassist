@@ -187,6 +187,19 @@ def test_partial_embedding_failure_does_not_publish(client, mock_admin_auth, moc
     db.table.return_value.delete.assert_not_called()
 
 
+@pytest.mark.parametrize("current_files", [[], [{**MOCK_DRIVE_FILES[0], "md5_checksum": "later"}]])
+def test_changed_or_removed_drive_file_is_not_published(client, mock_admin_auth, mock_rag_supabase, current_files):
+    db = mock_rag_supabase.return_value
+    db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+    with patch("routes.rag._list_drive_files", side_effect=[MOCK_DRIVE_FILES, current_files]), \
+         patch("routes.rag._download_file_content", return_value="document"), \
+         patch("routes.rag.get_hybrid_client") as llm:
+        llm.return_value.embed = AsyncMock(return_value=[0.1] * 768)
+        res = client.post("/api/rag/sync-file?gdrive_id=drive-file-1", headers={"Authorization": "Bearer token"})
+    assert res.status_code == 409
+    db.rpc.assert_not_called()
+
+
 def test_legacy_partial_index_is_rescanned_even_with_matching_checksum(client, mock_admin_auth, mock_rag_supabase):
     db = mock_rag_supabase.return_value
     db.table.return_value.select.return_value.execute.return_value.data = [{

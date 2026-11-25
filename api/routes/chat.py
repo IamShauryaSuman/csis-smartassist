@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
@@ -221,35 +221,41 @@ async def _finalize_chat_response(
     interactive_type: str | None,
     interactive_payload: dict[str, Any] | None,
 ):
-    """Background task to store messages, update timestamp, and generate session title."""
+    """Store both messages together, then update session metadata."""
     db = get_supabase_client()
-    llm = get_hybrid_client()
-
-    try:
-        # ── Store user message ──────────────────────────────────────────────────
-        await asyncio.to_thread(lambda: db.table("messages").insert({
+    created_at = datetime.now(timezone.utc)
+    messages = [
+        {
             "session_id": session_id,
             "role": "user",
             "content": user_message,
-        }).execute())
-
-        # ── Store assistant message ─────────────────────────────────────────────
-        assistant_msg_data: dict[str, Any] = {
+            "interactive_type": None,
+            "interactive_payload": None,
+            "created_at": created_at.isoformat(),
+        },
+        {
             "session_id": session_id,
             "role": "assistant",
             "content": assistant_content,
-        }
-        if interactive_type:
-            assistant_msg_data["interactive_type"] = interactive_type
-            assistant_msg_data["interactive_payload"] = interactive_payload
+            "interactive_type": interactive_type,
+            "interactive_payload": interactive_payload,
+            "created_at": (created_at + timedelta(microseconds=1)).isoformat(),
+        },
+    ]
 
-        await asyncio.to_thread(lambda: db.table("messages").insert(assistant_msg_data).execute())
+    try:
+        await asyncio.to_thread(lambda: db.table("messages").insert(messages).execute())
+    except Exception as exc:
+        logger.exception("Could not save chat turn for session %s", session_id)
+        raise RuntimeError("Could not confirm that the conversation was saved. Check chat history before retrying.") from exc
 
+    try:
         # ── Auto-generate session title from first message ──────────────────────
         generated_title = None
         if session_title in ("New Chat", "New Chat Session"):
             title = ""
             try:
+                llm = get_hybrid_client()
                 title_prompt = TITLE_GENERATION_PROMPT.format(
                     user_message=user_message,
                     assistant_response=assistant_content[:1000]
@@ -318,7 +324,7 @@ async def _finalize_chat_response(
         asyncio.create_task(_synthesize_memory_task(session_id, user_id))
 
     except Exception:
-        logger.error("Error in chat background task", exc_info=True)
+        logger.exception("Could not update metadata for saved chat session %s", session_id)
 
 
 @router.post("/send")
